@@ -30,9 +30,35 @@ type DisruptionSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of Disruption. Edit disruption_types.go to remove/update
+	// PodKill defines the configuration for pod killing disruptions
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	PodKill *PodKillSpec `json:"podKill,omitempty"`
+}
+
+// PodKillSpec defines the configuration for pod killing disruptions
+type PodKillSpec struct {
+	// Selector defines the label selector to identify which pods to target
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
+	// Duration is the duration for which the disruption should last (e.g., 5m, 30s)
+	// +optional
+	Duration *metav1.Duration `json:"duration,omitempty"`
+
+	// KillMode specifies how to select pods for killing
+	// +kubebuilder:validation:Enum=random;all;fixed-count
+	// +kubebuilder:default="random"
+	KillMode string `json:"killMode"`
+
+	// Count specifies the number of pods to kill (only used when KillMode is "fixed-count")
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Count int32 `json:"count,omitempty"`
+
+	// GracePeriodSeconds specifies the grace period for pod termination
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	GracePeriodSeconds int64 `json:"gracePeriodSeconds,omitempty"`
 }
 
 // DisruptionStatus defines the observed state of Disruption.
