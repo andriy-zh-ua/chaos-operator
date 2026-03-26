@@ -8,4 +8,14 @@ layout:
 - go.kubebuilder.io/v4
 projectName: chaos-operator
 repo: github.com/andriy-zh-ua/chaos-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: a2solutions.ca
+  group: chaos
+  kind: Disruption
+  path: github.com/andriy-zh-ua/chaos-operator/api/v1
+  version: v1
 version: "3"
