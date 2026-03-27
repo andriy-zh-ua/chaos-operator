@@ -30,9 +30,19 @@ type DisruptionSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
+	// Safety configuration defines constraints to limit disruption impact and prevent system-wide failures
+	// +optional
+	Safety *SafetyConfig `json:"safety,omitempty"`
+
 	// PodKill defines the configuration for pod killing disruptions
 	// +optional
 	PodKill *PodKillSpec `json:"podKill,omitempty"`
+}
+
+type SafetyConfig struct {
+	MaxDurationSeconds    int32 `json:"maxDurationSeconds,omitempty"`    // Maximum time disruption can run
+	MaxPodsAffected       int32 `json:"maxPodsAffected,omitempty"`       // Maximum number of pods that can be affected
+	MaxPercentageAffected int32 `json:"maxPercentageAffected,omitempty"` // Maximum percentage of pods that can be affected (0-100)
 }
 
 // PodKillSpec defines the configuration for pod killing disruptions
@@ -41,7 +51,7 @@ type PodKillSpec struct {
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
-	// Duration is the duration for which the disruption should last (e.g., 5m, 30s)
+	// Duration for which the disruption should last (e.g., 5m, 30s)
 	// +optional
 	Duration *metav1.Duration `json:"duration,omitempty"`
 
@@ -55,7 +65,7 @@ type PodKillSpec struct {
 	// +optional
 	Count int32 `json:"count,omitempty"`
 
-	// GracePeriodSeconds specifies the grace period for pod termination
+	// GracePeriodSeconds specifies the grace period for pod before termination
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	GracePeriodSeconds int64 `json:"gracePeriodSeconds,omitempty"`
@@ -82,6 +92,10 @@ type DisruptionStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	Phase     string       `json:"phase"` // Pending, Running, Completed, Failed
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+	EndTime   *metav1.Time `json:"endTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
