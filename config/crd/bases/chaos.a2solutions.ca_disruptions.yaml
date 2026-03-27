@@ -49,12 +49,13 @@ spec:
                     minimum: 1
                     type: integer
                   duration:
-                    description: Duration is the duration for which the disruption
-                      should last (e.g., 5m, 30s)
+                    description: Duration for which the disruption should last (e.g.,
+                      5m, 30s)
                     type: string
                   gracePeriodSeconds:
-                    description: GracePeriodSeconds specifies the grace period for
-                      pod termination
+                    description: |-
+                      GracePeriodSeconds specifies the grace period for pod before termination
+                      (OpenAPI validation rule rejects any value less than 0)
                     format: int64
                     minimum: 0
                     type: integer
@@ -115,6 +116,20 @@ spec:
                     x-kubernetes-map-type: atomic
                 required:
                 - killMode
+                type: object
+              safety:
+                description: Safety configuration defines constraints to limit disruption
+                  impact and prevent system-wide failures
+                properties:
+                  maxDurationSeconds:
+                    format: int32
+                    type: integer
+                  maxPercentageAffected:
+                    format: int32
+                    type: integer
+                  maxPodsAffected:
+                    format: int32
+                    type: integer
                 type: object
             type: object
           status:
@@ -189,6 +204,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              endTime:
+                format: date-time
+                type: string
+              phase:
+                type: string
+              startTime:
+                format: date-time
+                type: string
+            required:
+            - phase
             type: object
         required:
         - spec

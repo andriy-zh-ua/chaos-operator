@@ -178,10 +178,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.DisruptionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	reconciler := controller.NewDisruptionReconciler(mgr)
+	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Disruption")
 		os.Exit(1)
 	}

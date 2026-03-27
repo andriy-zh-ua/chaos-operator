@@ -66,6 +66,7 @@ type PodKillSpec struct {
 	Count int32 `json:"count,omitempty"`
 
 	// GracePeriodSeconds specifies the grace period for pod before termination
+	// (OpenAPI validation rule rejects any value less than 0)
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	GracePeriodSeconds int64 `json:"gracePeriodSeconds,omitempty"`
