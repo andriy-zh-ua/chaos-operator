@@ -54,6 +54,28 @@ func newMockErrorClient(statusError error) *mockErrorClient {
 	}
 }
 
+func TestSetupWithManager(t *testing.T) {
+	// This test verifies that SetupWithManager has the correct signature and basic behavior
+	// Full integration testing of controller setup is typically done in envtest/integration tests
+	t.Run("basic function signature test", func(t *testing.T) {
+		// Create a test scheme
+		scheme := runtime.NewScheme()
+		_ = chaosv1.AddToScheme(scheme)
+
+		// Create reconciler
+		r := &DisruptionReconciler{
+			Scheme: scheme,
+		}
+
+		err := r.SetupWithManager(nil)
+
+		// When called with nil manager, it should return an error rather than panic
+		if err == nil {
+			t.Errorf("Expected error when calling SetupWithManager with nil manager, got nil")
+		}
+	})
+}
+
 func TestValidatePodKill(t *testing.T) {
 	tests := []struct {
 		name        string
