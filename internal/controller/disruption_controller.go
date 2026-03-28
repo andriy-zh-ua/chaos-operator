@@ -196,24 +196,35 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec) error 
 		r.Logger.Info("Selector is empty - disruption will affect all pods in target namespaces")
 	}
 
+	// Validate duration if specified
 	if spec.Duration != nil {
+		// Validate duration is positive
 		if spec.Duration.Duration <= 0 {
 			return fmt.Errorf("podKill.duration must be positive, got %v", spec.Duration.Duration)
 		}
+		// Check against maximum allowed duration from safety config
+		maxDuration := time.Duration(r.defaultSafetyConfig.MaxDurationSeconds) * time.Second
+		if spec.Duration.Duration > maxDuration {
+			return fmt.Errorf("podKill.duration '%v' exceeds maximum allowed limit of %v", spec.Duration.Duration, maxDuration)
+		}
 	}
 
+	// Validate count only when killMode is fixed-count
 	if spec.KillMode != "fixed-count" && spec.Count > 0 {
 		return fmt.Errorf("podKill.count is only valid when killMode is 'fixed-count', but killMode is '%s'", spec.KillMode)
 	}
 
+	// Validate count is positive when killMode is fixed-count
 	if spec.KillMode == "fixed-count" && spec.Count <= 0 {
 		return fmt.Errorf("podKill.count must be > 0 when killMode is 'fixed-count'")
 	}
 
+	// Validate count does not exceed maximum limit
 	if spec.Count > r.maxCountLimit {
 		return fmt.Errorf("podKill.count '%d' exceeds maximum allowed limit of %d", spec.Count, r.maxCountLimit)
 	}
 
+	// Validate grace period does not exceed maximum limit
 	if spec.GracePeriodSeconds > r.maxGracePeriodSeconds {
 		return fmt.Errorf("podKill.gracePeriodSeconds '%d' exceeds maximum allowed limit of %d", spec.GracePeriodSeconds, r.maxGracePeriodSeconds)
 	}

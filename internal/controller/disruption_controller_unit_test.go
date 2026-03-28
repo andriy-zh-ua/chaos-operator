@@ -54,6 +54,234 @@ func newMockErrorClient(statusError error) *mockErrorClient {
 	}
 }
 
+func TestValidatePodKill(t *testing.T) {
+	tests := []struct {
+		name        string
+		disruption  chaosv1.Disruption
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "nil podKill spec - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: nil,
+				},
+			},
+			expectError: true,
+			errorMsg:    "no PodKill specification provided - nothing to disrupt",
+		},
+		{
+			name: "empty selector - should not return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Selector: &metav1.LabelSelector{},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "negative duration - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						// time.Duration(-1)      // -1ns (nanoseconds)
+						// time.Duration(-1000)   // -1µs (microseconds)
+						// time.Duration(-1000000) // -1ms (milliseconds)
+						// time.Duration(-1000000000) // -1s (seconds)
+						Duration: &metav1.Duration{Duration: -1},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.duration must be positive, got -1ns",
+		},
+		{
+			name: "count with non-fixed-count killMode - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode: "random",
+						Count:    5,
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.count is only valid when killMode is 'fixed-count', but killMode is 'random'",
+		},
+		{
+			name: "zero count with fixed-count killMode - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode: "fixed-count",
+						Count:    0,
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.count must be > 0 when killMode is 'fixed-count'",
+		},
+		{
+			name: "count exceeding max limit - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode: "fixed-count",
+						Count:    101,
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.count '101' exceeds maximum allowed limit of 100",
+		},
+		{
+			name: "gracePeriod exceeding max limit - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						GracePeriodSeconds: 301,
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.gracePeriodSeconds '301' exceeds maximum allowed limit of 300",
+		},
+		{
+			name: "valid configuration - should not return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode:           "fixed-count",
+						Count:              5,
+						GracePeriodSeconds: 30,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "zero duration - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Duration: &metav1.Duration{Duration: 0},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.duration must be positive, got 0s",
+		},
+		{
+			name: "negative duration - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						// time.Duration(-1)      // -1ns (nanoseconds)
+						// time.Duration(-1000)   // -1µs (microseconds)
+						// time.Duration(-1000000) // -1ms (milliseconds)
+						// time.Duration(-1000000000) // -1s (seconds)
+						Duration: &metav1.Duration{Duration: -1},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.duration must be positive, got -1ns",
+		},
+		{
+			name: "valid positive duration - should not return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Duration: &metav1.Duration{Duration: 30000000000}, // 30 seconds
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "duration exceeding safety limit - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Duration: &metav1.Duration{Duration: 600000000000}, // 10 minutes (exceeds 5min default)
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.duration '10m0s' exceeds maximum allowed limit of 5m0s",
+		},
+		{
+			name: "random killMode without count - should not return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode: "random",
+						// Count is 0 by default, which is fine for random mode
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "all killMode without count - should not return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode: "all",
+						// Count is 0 by default, which is correct for 'all' mode
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "all killMode with count - should return error (count only valid with fixed-count)",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode: "all",
+						Count:    5,
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.count is only valid when killMode is 'fixed-count', but killMode is 'all'",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// Create reconciler with default limits
+			r := &DisruptionReconciler{
+				maxCountLimit:         100,
+				maxGracePeriodSeconds: 300,
+				defaultSafetyConfig: chaosv1.SafetyConfig{
+					MaxDurationSeconds:    300, // 5 minutes
+					MaxPodsAffected:       5,
+					MaxPercentageAffected: 20,
+				},
+			}
+
+			err := r.validatePodKill(test.disruption.Spec.PodKill)
+
+			if test.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if err.Error() != test.errorMsg {
+					t.Errorf("Expected error message '%s', got '%s'", test.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestGetSafetyConfig(t *testing.T) {
 	tests := []struct {
 		name           string
