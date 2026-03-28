@@ -54,7 +54,175 @@ func newMockErrorClient(statusError error) *mockErrorClient {
 	}
 }
 
+func TestGetSafetyConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		disruption     chaosv1.Disruption
+		defaultConfig  chaosv1.SafetyConfig
+		expectedResult chaosv1.SafetyConfig
+	}{
+		{
+			name: "nil safety config - should return defaults",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					Safety: nil,
+				},
+			},
+			defaultConfig: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+			expectedResult: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+		},
+		{
+			name: "complete safety config - should return as-is",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					Safety: &chaosv1.SafetyConfig{
+						MaxDurationSeconds:    600,
+						MaxPodsAffected:       10,
+						MaxPercentageAffected: 50,
+					},
+				},
+			},
+			defaultConfig: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+			expectedResult: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    600,
+				MaxPodsAffected:       10,
+				MaxPercentageAffected: 50,
+			},
+		},
+		{
+			name: "partial safety config - missing duration should use default",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					Safety: &chaosv1.SafetyConfig{
+						MaxDurationSeconds:    0, // Missing
+						MaxPodsAffected:       8,
+						MaxPercentageAffected: 30,
+					},
+				},
+			},
+			defaultConfig: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+			expectedResult: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300, // From default
+				MaxPodsAffected:       8,   // From disruption
+				MaxPercentageAffected: 30,  // From disruption
+			},
+		},
+		{
+			name: "partial safety config - missing pods should use default",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					Safety: &chaosv1.SafetyConfig{
+						MaxDurationSeconds:    400,
+						MaxPodsAffected:       0, // Missing
+						MaxPercentageAffected: 40,
+					},
+				},
+			},
+			defaultConfig: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+			expectedResult: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    400, // From disruption
+				MaxPodsAffected:       5,   // From default
+				MaxPercentageAffected: 40,  // From disruption
+			},
+		},
+		{
+			name: "partial safety config - missing percentage should use default",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					Safety: &chaosv1.SafetyConfig{
+						MaxDurationSeconds:    400,
+						MaxPodsAffected:       8,
+						MaxPercentageAffected: 0, // Missing
+					},
+				},
+			},
+			defaultConfig: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+			expectedResult: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    400, // From disruption
+				MaxPodsAffected:       8,   // From disruption
+				MaxPercentageAffected: 20,  // From default
+			},
+		},
+		{
+			name: "all zero values - should use all defaults",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					Safety: &chaosv1.SafetyConfig{
+						MaxDurationSeconds:    0,
+						MaxPodsAffected:       0,
+						MaxPercentageAffected: 0,
+					},
+				},
+			},
+			defaultConfig: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+			expectedResult: chaosv1.SafetyConfig{
+				MaxDurationSeconds:    300,
+				MaxPodsAffected:       5,
+				MaxPercentageAffected: 20,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// Create reconciler with specific default config
+			r := &DisruptionReconciler{
+				defaultSafetyConfig: test.defaultConfig,
+			}
+
+			result := r.getSafetyConfig(test.disruption)
+
+			// Assert if max duration seconds is as expected
+			if result.MaxDurationSeconds != test.expectedResult.MaxDurationSeconds {
+				t.Errorf("Expected MaxDurationSeconds %d, got %d",
+					test.expectedResult.MaxDurationSeconds, result.MaxDurationSeconds)
+			}
+
+			// Assert if max pods affected is as expected
+			if result.MaxPodsAffected != test.expectedResult.MaxPodsAffected {
+				t.Errorf("Expected MaxPodsAffected %d, got %d",
+					test.expectedResult.MaxPodsAffected, result.MaxPodsAffected)
+			}
+
+			// Assert if max percentage affected is as expected
+			if result.MaxPercentageAffected != test.expectedResult.MaxPercentageAffected {
+				t.Errorf("Expected MaxPercentageAffected %d, got %d",
+					test.expectedResult.MaxPercentageAffected, result.MaxPercentageAffected)
+			}
+		})
+	}
+}
+
 func TestGetInt32Env(t *testing.T) {
+	// Create reconciler
 	r := &DisruptionReconciler{}
 
 	tests := []struct {
@@ -92,24 +260,28 @@ func TestGetInt32Env(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		// Set up environment variable if needed
-		if test.envValue != "" {
-			os.Setenv(test.envKey, test.envValue)
-			if test.shouldUnset {
-				defer os.Unsetenv(test.envKey)
+		t.Run(test.name, func(t *testing.T) {
+			// Set up environment variable if needed
+			if test.envValue != "" {
+				os.Setenv(test.envKey, test.envValue)
+				if test.shouldUnset {
+					defer os.Unsetenv(test.envKey)
+				}
 			}
-		}
 
-		value := r.getInt32Env(test.envKey, test.defaultValue)
+			value := r.getInt32Env(test.envKey, test.defaultValue)
 
-		if value != test.expected {
-			t.Errorf("Test %s: getInt32Env(%s, %d) = %d, want %d",
-				test.name, test.envKey, test.defaultValue, value, test.expected)
-		}
+			// Assert if value is not as expected
+			if value != test.expected {
+				t.Errorf("Test %s: getInt32Env(%s, %d) = %d, want %d",
+					test.name, test.envKey, test.defaultValue, value, test.expected)
+			}
+		})
 	}
 }
 
 func TestGetInt64Env(t *testing.T) {
+	// Create reconciler
 	r := &DisruptionReconciler{}
 
 	tests := []struct {
@@ -147,20 +319,23 @@ func TestGetInt64Env(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		// Set up environment variable if needed
-		if test.envValue != "" {
-			os.Setenv(test.envKey, test.envValue)
-			if test.shouldUnset {
-				defer os.Unsetenv(test.envKey)
+		t.Run(test.name, func(t *testing.T) {
+			// Set up environment variable if needed
+			if test.envValue != "" {
+				os.Setenv(test.envKey, test.envValue)
+				if test.shouldUnset {
+					defer os.Unsetenv(test.envKey)
+				}
 			}
-		}
 
-		value := r.getInt64Env(test.envKey, test.defaultValue)
+			value := r.getInt64Env(test.envKey, test.defaultValue)
 
-		if value != test.expected {
-			t.Errorf("Test %s: getInt64Env(%s, %d) = %d, want %d",
-				test.name, test.envKey, test.defaultValue, value, test.expected)
-		}
+			// Assert if value is not as expected
+			if value != test.expected {
+				t.Errorf("Test %s: getInt64Env(%s, %d) = %d, want %d",
+					test.name, test.envKey, test.defaultValue, value, test.expected)
+			}
+		})
 	}
 }
 
@@ -200,85 +375,105 @@ func TestUpdateDisruptionStatus(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		// Initialize reconciler with mock client
-		r := &DisruptionReconciler{
-			Client: newMockErrorClient(test.statusUpdateError),
-		}
-
-		// Create disruption with proper initial state
-		disruption := &chaosv1.Disruption{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-disruption",
-			},
-			Status: chaosv1.DisruptionStatus{
-				Phase: test.initialPhase,
-			},
-		}
-
-		// Create the resource in the fake client so that it exists for the status update
-		if err := r.Create(context.Background(), disruption); err != nil {
-			t.Fatalf("Test %s: failed to create disruption: %v", test.name, err)
-		}
-
-		err := r.updateDisruptionStatus(context.Background(), disruption, test.targetPhase, logr.Discard())
-
-		// Assert no error
-		if err != nil && err.Error() != "Failed to update disruption status" {
-			t.Errorf("Test %s: Expected error message 'Failed to update disruption status', got '%s'", test.name, err.Error())
-		}
-
-		// Assert phase was updated
-		if disruption.Status.Phase != test.targetPhase {
-			t.Errorf("Test %s: Expected phase %s, got %s", test.name, test.targetPhase, disruption.Status.Phase)
-		}
-
-		// Assert start time was set correctly
-		if disruption.Status.Phase == "Running" {
-			if disruption.Status.StartTime == nil {
-				t.Errorf("Test %s: Expected startTime to be set when phase is Running", test.name)
+		t.Run(test.name, func(t *testing.T) {
+			// Create reconciler with mock client
+			r := &DisruptionReconciler{
+				Client: newMockErrorClient(test.statusUpdateError),
 			}
-		}
 
-		// Assert end time was set correctly
-		if disruption.Status.Phase == "Completed" || disruption.Status.Phase == "Failed" {
-			if disruption.Status.EndTime == nil {
-				t.Errorf("Test %s: Expected endTime to be set when phase is Completed or Failed", test.name)
+			// Create disruption with proper initial state
+			disruption := &chaosv1.Disruption{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-disruption",
+				},
+				Status: chaosv1.DisruptionStatus{
+					Phase: test.initialPhase,
+				},
 			}
-		}
+
+			// Create the resource in the fake client so that it exists for the status update
+			if err := r.Create(context.Background(), disruption); err != nil {
+				t.Fatalf("Test %s: failed to create disruption: %v", test.name, err)
+			}
+
+			err := r.updateDisruptionStatus(context.Background(), disruption, test.targetPhase, logr.Discard())
+
+			// Assert no error
+			if err != nil && err.Error() != "Failed to update disruption status" {
+				t.Errorf("Test %s: Expected error message 'Failed to update disruption status', got '%s'", test.name, err.Error())
+			}
+
+			// Assert phase was updated
+			if disruption.Status.Phase != test.targetPhase {
+				t.Errorf("Test %s: Expected phase %s, got %s", test.name, test.targetPhase, disruption.Status.Phase)
+			}
+
+			// Assert start time was set correctly
+			if disruption.Status.Phase == "Running" {
+				if disruption.Status.StartTime == nil {
+					t.Errorf("Test %s: Expected startTime to be set when phase is Running", test.name)
+				}
+			}
+
+			// Assert end time was set correctly
+			if disruption.Status.Phase == "Completed" || disruption.Status.Phase == "Failed" {
+				if disruption.Status.EndTime == nil {
+					t.Errorf("Test %s: Expected endTime to be set when phase is Completed or Failed", test.name)
+				}
+			}
+		})
 	}
 }
 
 func TestMarkDisruptionRunning(t *testing.T) {
-	// Setup mock client (as before)
-	r := &DisruptionReconciler{Client: newMockErrorClient(nil), Logger: logr.Discard()}
+	// Create reconciler with mock client
+	r := &DisruptionReconciler{
+		Client: newMockErrorClient(nil),
+		Logger: logr.Discard(),
+	}
+
+	// Create disruption
 	disruption := &chaosv1.Disruption{}
 
 	err := r.markDisruptionRunning(context.Background(), disruption, r.Logger)
 
+	// Assert if error occurred
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
 }
 
 func TestMarkDisruptionFailed(t *testing.T) {
-	// Setup mock client (as before)
-	r := &DisruptionReconciler{Client: newMockErrorClient(nil), Logger: logr.Discard()}
+	// Create reconciler with mock client
+	r := &DisruptionReconciler{
+		Client: newMockErrorClient(nil),
+		Logger: logr.Discard(),
+	}
+
+	// Create disruption
 	disruption := &chaosv1.Disruption{}
 
 	err := r.markDisruptionFailed(context.Background(), disruption, r.Logger)
 
+	// Assert if error occurred
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
 }
 
 func TestMarkDisruptionCompleted(t *testing.T) {
-	// Setup mock client (as before)
-	r := &DisruptionReconciler{Client: newMockErrorClient(nil), Logger: logr.Discard()}
+	// Create reconciler with mock client
+	r := &DisruptionReconciler{
+		Client: newMockErrorClient(nil),
+		Logger: logr.Discard(),
+	}
+
+	// Create disruption
 	disruption := &chaosv1.Disruption{}
 
 	err := r.markDisruptionCompleted(context.Background(), disruption, r.Logger)
 
+	// Assert if error occurred
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -286,9 +481,5 @@ func TestMarkDisruptionCompleted(t *testing.T) {
 
 // // Test individual functions in isolation
 // func TestValidatePodKill(t *testing.T) {
-// 	panic("unimplemented")
-// }
-
-// func TestGetSafetyConfig(t *testing.T) {
 // 	panic("unimplemented")
 // }
