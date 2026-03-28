@@ -39,14 +39,17 @@ const (
 	DefaultMaxPodsAffected       = 1   // 1 pod
 	DefaultMaxPercentageAffected = 10  // 10%
 
-	// Reconciliation intervals
-	MonitoringRequeueInterval = 30 * time.Second // Regular monitoring
+	// Reconciliation interval constants
+	MonitoringRequeueInterval = 30 * time.Second
 
-	// Validation limits
-	MaxCountLimit = 100 // Maximum allowed count for fixed-count mode
+	// Validation limits constants
+	MaxCountLimit         = 100 // Maximum allowed count for fixed-count mode
+	MaxGracePeriodSeconds = 300 // Maximum allowed grace period in seconds (equal to default duration)
 
-	// Grace period limits
-	MaxGracePeriodSeconds = DefaultDurationSeconds // Maximum allowed grace period in seconds (equal to default duration)
+	// Disruption phase constants
+	PhaseCompleted = "Completed"
+	PhaseFailed    = "Failed"
+	PhaseRunning   = "Running"
 )
 
 // DisruptionReconciler reconciles a Disruption object
@@ -117,7 +120,7 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Skip reconciliation for completed/failed disruptions
-	if disruption.Status.Phase == "Completed" || disruption.Status.Phase == "Failed" {
+	if disruption.Status.Phase == PhaseCompleted || disruption.Status.Phase == PhaseFailed {
 		// No further reconciliation needed - disruption is finished
 		return ctrl.Result{}, nil
 	}
@@ -127,7 +130,7 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Validate PodKill configuration
 	if err := r.validatePodKill(disruption.Spec.PodKill); err != nil {
 		r.Logger.Error(err, "Invalid PodKill configuration")
-		if err := r.markDisruptionFailed(ctx, &disruption, r.Logger); err != nil {
+		if err := r.markDisruptionFailed(ctx, &disruption); err != nil {
 			// Return error to trigger exponential backoff and retry until the status update succeeds
 			return ctrl.Result{}, err
 		}
@@ -138,7 +141,7 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// If experiment has no start time, mark as Running and set start time
 	if disruption.Status.StartTime == nil {
-		if err := r.markDisruptionRunning(ctx, &disruption, r.Logger); err != nil {
+		if err := r.markDisruptionRunning(ctx, &disruption); err != nil {
 			// Return error to trigger exponential backoff and retry until the status update succeeds
 			return ctrl.Result{}, err
 		}
@@ -154,7 +157,7 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// If the disruption has run longer than the max duration
 		if duration > time.Duration(safetyConfig.MaxDurationSeconds)*time.Second {
-			if err := r.markDisruptionCompleted(ctx, &disruption, r.Logger); err != nil {
+			if err := r.markDisruptionCompleted(ctx, &disruption); err != nil {
 				// Return error to trigger exponential backoff and retry until the status update succeeds
 				return ctrl.Result{}, err
 			}
@@ -273,11 +276,17 @@ func (r *DisruptionReconciler) getSafetyConfig(disruption chaosv1.Disruption) ch
 func (r *DisruptionReconciler) getInt32Env(key string, defaultValue int32) int32 {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 32); err == nil {
+			r.Logger.Info("Parsed environment variable",
+				"key", key,
+				"value", parsed)
 			return int32(parsed)
 		}
 	}
 	// Log that we're using default value
-	r.Logger.Info("Using default value for %s: %d (environment variable not set or invalid)", key, defaultValue)
+	r.Logger.Info("Using default value:",
+		"key", key,
+		"value", defaultValue,
+		"reason", "environment variable not set or invalid")
 	return defaultValue
 }
 
@@ -297,30 +306,35 @@ func (r *DisruptionReconciler) getInt32Env(key string, defaultValue int32) int32
 func (r *DisruptionReconciler) getInt64Env(key string, defaultValue int64) int64 {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			r.Logger.Info("Parsed environment variable",
+				"key", key,
+				"value", parsed)
 			return parsed
 		}
-		r.Logger.Info("Invalid %s, using default %d", key, defaultValue)
 	}
 	// Log that we're using default value
-	r.Logger.Info("Using default value for %s: %d (environment variable not set or invalid)", key, defaultValue)
+	r.Logger.Info("Using default value",
+		"key", key,
+		"value", defaultValue,
+		"reason", "environment variable not set or invalid")
 	return defaultValue
 }
 
 // updateDisruptionStatus updates the disruption status and handles errors
-func (r *DisruptionReconciler) updateDisruptionStatus(ctx context.Context, disruption *chaosv1.Disruption, phase string, logger logr.Logger) error {
+func (r *DisruptionReconciler) updateDisruptionStatus(ctx context.Context, disruption *chaosv1.Disruption, phase string) error {
 	disruption.Status.Phase = phase
 
 	now := metav1.Now()
 
 	switch phase {
-	case "Running":
+	case PhaseRunning:
 		disruption.Status.StartTime = &now
-	case "Completed", "Failed":
+	case PhaseCompleted, PhaseFailed:
 		disruption.Status.EndTime = &now
 	}
 
 	if err := r.Status().Update(ctx, disruption); err != nil {
-		logger.Error(err, "Failed to update disruption status")
+		r.Logger.Error(err, "Failed to update disruption status")
 		return err
 	}
 
@@ -328,22 +342,21 @@ func (r *DisruptionReconciler) updateDisruptionStatus(ctx context.Context, disru
 }
 
 // markDisruptionRunning marks disruption as running
-func (r *DisruptionReconciler) markDisruptionRunning(ctx context.Context, disruption *chaosv1.Disruption, logger logr.Logger) error {
-	return r.updateDisruptionStatus(ctx, disruption, "Running", logger)
+func (r *DisruptionReconciler) markDisruptionRunning(ctx context.Context, disruption *chaosv1.Disruption) error {
+	return r.updateDisruptionStatus(ctx, disruption, PhaseRunning)
 }
 
 // markDisruptionCompleted marks disruption as completed
-func (r *DisruptionReconciler) markDisruptionCompleted(ctx context.Context, disruption *chaosv1.Disruption, logger logr.Logger) error {
-	return r.updateDisruptionStatus(ctx, disruption, "Completed", logger)
+func (r *DisruptionReconciler) markDisruptionCompleted(ctx context.Context, disruption *chaosv1.Disruption) error {
+	return r.updateDisruptionStatus(ctx, disruption, PhaseCompleted)
 }
 
 // markDisruptionFailed marks disruption as failed
-func (r *DisruptionReconciler) markDisruptionFailed(ctx context.Context, disruption *chaosv1.Disruption, logger logr.Logger) error {
-	return r.updateDisruptionStatus(ctx, disruption, "Failed", logger)
+func (r *DisruptionReconciler) markDisruptionFailed(ctx context.Context, disruption *chaosv1.Disruption) error {
+	return r.updateDisruptionStatus(ctx, disruption, PhaseFailed)
 }
 
 // executePodKill performs the actual pod killing logic
 func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *chaosv1.Disruption) error {
-	r.Logger.Info("Executing PodKill for disruption:", "name", disruption.Name)
 	return nil
 }

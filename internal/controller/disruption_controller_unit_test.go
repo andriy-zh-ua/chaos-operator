@@ -536,9 +536,15 @@ func TestGetInt32Env(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			// Set up environment variable if needed
 			if test.envValue != "" {
-				os.Setenv(test.envKey, test.envValue)
+				if err := os.Setenv(test.envKey, test.envValue); err != nil {
+					t.Fatalf("Failed to set environment variable %s: %v", test.envKey, err)
+				}
 				if test.shouldUnset {
-					defer os.Unsetenv(test.envKey)
+					defer func() {
+						if err := os.Unsetenv(test.envKey); err != nil {
+							t.Fatalf("Failed to unset environment variable %s: %v", test.envKey, err)
+						}
+					}()
 				}
 			}
 
@@ -595,9 +601,15 @@ func TestGetInt64Env(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			// Set up environment variable if needed
 			if test.envValue != "" {
-				os.Setenv(test.envKey, test.envValue)
+				if err := os.Setenv(test.envKey, test.envValue); err != nil {
+					t.Fatalf("Failed to set environment variable %s: %v", test.envKey, err)
+				}
 				if test.shouldUnset {
-					defer os.Unsetenv(test.envKey)
+					defer func() {
+						if err := os.Unsetenv(test.envKey); err != nil {
+							t.Fatalf("Failed to unset environment variable %s: %v", test.envKey, err)
+						}
+					}()
 				}
 			}
 
@@ -669,7 +681,7 @@ func TestUpdateDisruptionStatus(t *testing.T) {
 				t.Fatalf("Test %s: failed to create disruption: %v", test.name, err)
 			}
 
-			err := r.updateDisruptionStatus(context.Background(), disruption, test.targetPhase, logr.Discard())
+			err := r.updateDisruptionStatus(context.Background(), disruption, test.targetPhase)
 
 			// Assert no error
 			if err != nil && err.Error() != "Failed to update disruption status" {
@@ -708,7 +720,7 @@ func TestMarkDisruptionRunning(t *testing.T) {
 	// Create disruption
 	disruption := &chaosv1.Disruption{}
 
-	err := r.markDisruptionRunning(context.Background(), disruption, r.Logger)
+	err := r.markDisruptionRunning(context.Background(), disruption)
 
 	// Assert if error occurred
 	if err != nil {
@@ -726,7 +738,7 @@ func TestMarkDisruptionFailed(t *testing.T) {
 	// Create disruption
 	disruption := &chaosv1.Disruption{}
 
-	err := r.markDisruptionFailed(context.Background(), disruption, r.Logger)
+	err := r.markDisruptionFailed(context.Background(), disruption)
 
 	// Assert if error occurred
 	if err != nil {
@@ -744,7 +756,7 @@ func TestMarkDisruptionCompleted(t *testing.T) {
 	// Create disruption
 	disruption := &chaosv1.Disruption{}
 
-	err := r.markDisruptionCompleted(context.Background(), disruption, r.Logger)
+	err := r.markDisruptionCompleted(context.Background(), disruption)
 
 	// Assert if error occurred
 	if err != nil {
