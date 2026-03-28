@@ -271,6 +271,18 @@ func (r *DisruptionReconciler) getInt32Env(key string, defaultValue int32) int32
 }
 
 // getInt64Env parses an environment variable as an int64 with a default value
+// base: 10 = Decimal (0-9),
+//
+//	2 = Binary (0-1),
+//	8 = Octal (0-7),
+//	16 = Hexadecimal (0-9, A-F)
+//
+// bitSize: 0 = Int (platform-dependent, usually 64-bit),
+//
+//	8 = 8-bit (range: -128 to 127),
+//	16 = 16-bit (range: -32,768 to 32,767),
+//	32 = 32-bit (range: -2,147,483,648 to 2,147,483,647),
+//	64 = 64-bit (huge range)
 func (r *DisruptionReconciler) getInt64Env(key string, defaultValue int64) int64 {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
