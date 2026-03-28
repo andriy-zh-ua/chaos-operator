@@ -69,7 +69,7 @@ type PodKillSpec struct {
 	// (OpenAPI validation rule rejects any value less than 0)
 	// +kubebuilder:validation:Minimum=0
 	// +optional
-	GracePeriodSeconds int64 `json:"gracePeriodSeconds,omitempty" yaml:"gracePeriodSeconds,omitempty"`
+	GracePeriodSeconds *int64 `json:"gracePeriodSeconds,omitempty" yaml:"gracePeriodSeconds,omitempty"`
 }
 
 // DisruptionStatus defines the observed state of Disruption.

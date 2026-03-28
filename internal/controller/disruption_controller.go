@@ -61,7 +61,7 @@ type DisruptionReconciler struct {
 	defaultSafetyConfig   chaosv1.SafetyConfig
 	monitoringInterval    time.Duration
 	maxCountLimit         int32
-	maxGracePeriodSeconds int64
+	maxGracePeriodSeconds *int64
 }
 
 // NewDisruptionReconciler creates a new disruption reconciler
@@ -87,7 +87,8 @@ func NewDisruptionReconciler(mgr ctrl.Manager) *DisruptionReconciler {
 	r.maxCountLimit = r.getInt32Env("CHAOS_MAX_COUNT_LIMIT", MaxCountLimit)
 
 	// Set max grace period limit
-	r.maxGracePeriodSeconds = r.getInt64Env("CHAOS_MAX_GRACE_PERIOD_SECONDS", MaxGracePeriodSeconds)
+	maxGracePeriod := r.getInt64Env("CHAOS_MAX_GRACE_PERIOD_SECONDS", MaxGracePeriodSeconds)
+	r.maxGracePeriodSeconds = &maxGracePeriod
 
 	return r
 }
@@ -228,8 +229,8 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec) error 
 	}
 
 	// Validate grace period does not exceed maximum limit
-	if spec.GracePeriodSeconds > r.maxGracePeriodSeconds {
-		return fmt.Errorf("podKill.gracePeriodSeconds '%d' exceeds maximum allowed limit of %d", spec.GracePeriodSeconds, r.maxGracePeriodSeconds)
+	if spec.GracePeriodSeconds != nil && r.maxGracePeriodSeconds != nil && *spec.GracePeriodSeconds > *r.maxGracePeriodSeconds {
+		return fmt.Errorf("podKill.gracePeriodSeconds '%d' exceeds maximum allowed limit of %d", *spec.GracePeriodSeconds, *r.maxGracePeriodSeconds)
 	}
 
 	return nil

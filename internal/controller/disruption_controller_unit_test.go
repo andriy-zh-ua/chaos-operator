@@ -48,10 +48,12 @@ func newMockErrorClient(statusError error) *mockErrorClient {
 	scheme := runtime.NewScheme()
 	_ = chaosv1.AddToScheme(scheme)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	return &mockErrorClient{
-		Client:      fakeClient,
-		statusError: statusError,
-	}
+	return &mockErrorClient{Client: fakeClient, statusError: statusError}
+}
+
+// Helper function to create int64 pointer
+func int64Ptr(i int64) *int64 {
+	return &i
 }
 
 func TestNewDisruptionReconciler(t *testing.T) {
@@ -187,7 +189,7 @@ func TestValidatePodKill(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					PodKill: &chaosv1.PodKillSpec{
-						GracePeriodSeconds: 301,
+						GracePeriodSeconds: int64Ptr(301),
 					},
 				},
 			},
@@ -201,7 +203,7 @@ func TestValidatePodKill(t *testing.T) {
 					PodKill: &chaosv1.PodKillSpec{
 						KillMode:           "fixed-count",
 						Count:              5,
-						GracePeriodSeconds: 30,
+						GracePeriodSeconds: int64Ptr(30),
 					},
 				},
 			},
@@ -302,7 +304,7 @@ func TestValidatePodKill(t *testing.T) {
 			// Create reconciler with default limits
 			r := &DisruptionReconciler{
 				maxCountLimit:         100,
-				maxGracePeriodSeconds: 300,
+				maxGracePeriodSeconds: int64Ptr(300),
 				defaultSafetyConfig: chaosv1.SafetyConfig{
 					MaxDurationSeconds:    300, // 5 minutes
 					MaxPodsAffected:       5,
