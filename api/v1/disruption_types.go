@@ -30,46 +30,46 @@ type DisruptionSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// Safety configuration defines constraints to limit disruption impact and prevent system-wide failures
+	// Safety configuration to prevent excessive disruption
 	// +optional
-	Safety *SafetyConfig `json:"safety,omitempty"`
+	Safety *SafetyConfig `json:"safety,omitempty" yaml:"safety,omitempty"`
 
-	// PodKill defines the configuration for pod killing disruptions
+	// PodKill configuration for chaos experiments
 	// +optional
-	PodKill *PodKillSpec `json:"podKill,omitempty"`
+	PodKill *PodKillSpec `json:"podKill,omitempty" yaml:"podKill,omitempty"`
 }
 
 type SafetyConfig struct {
-	MaxDurationSeconds    int32 `json:"maxDurationSeconds,omitempty"`    // Maximum time disruption can run
-	MaxPodsAffected       int32 `json:"maxPodsAffected,omitempty"`       // Maximum number of pods that can be affected
-	MaxPercentageAffected int32 `json:"maxPercentageAffected,omitempty"` // Maximum percentage of pods that can be affected (0-100)
+	MaxDurationSeconds    int32 `json:"maxDurationSeconds,omitempty" yaml:"maxDurationSeconds,omitempty"`       // Maximum time disruption can run
+	MaxPodsAffected       int32 `json:"maxPodsAffected,omitempty" yaml:"maxPodsAffected,omitempty"`             // Maximum number of pods that can be affected
+	MaxPercentageAffected int32 `json:"maxPercentageAffected,omitempty" yaml:"maxPercentageAffected,omitempty"` // Maximum percentage of pods that can be affected (0-100)
 }
 
 // PodKillSpec defines the configuration for pod killing disruptions
 type PodKillSpec struct {
 	// Selector defines the label selector to identify which pods to target
 	// +optional
-	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+	Selector *metav1.LabelSelector `json:"selector,omitempty" yaml:"selector,omitempty"`
 
 	// Duration for which the disruption should last (e.g., 5m, 30s)
 	// +optional
-	Duration *metav1.Duration `json:"duration,omitempty"`
+	Duration *metav1.Duration `json:"duration,omitempty" yaml:"duration,omitempty"`
 
 	// KillMode specifies how to select pods for killing
 	// +kubebuilder:validation:Enum=random;all;fixed-count
 	// +kubebuilder:default="random"
-	KillMode string `json:"killMode"`
+	KillMode string `json:"killMode" yaml:"killMode"`
 
 	// Count specifies the number of pods to kill (only used when KillMode is "fixed-count")
 	// +kubebuilder:validation:Minimum=1
 	// +optional
-	Count int32 `json:"count,omitempty"`
+	Count int32 `json:"count,omitempty" yaml:"count,omitempty"`
 
 	// GracePeriodSeconds specifies the grace period for pod before termination
 	// (OpenAPI validation rule rejects any value less than 0)
 	// +kubebuilder:validation:Minimum=0
 	// +optional
-	GracePeriodSeconds int64 `json:"gracePeriodSeconds,omitempty"`
+	GracePeriodSeconds int64 `json:"gracePeriodSeconds,omitempty" yaml:"gracePeriodSeconds,omitempty"`
 }
 
 // DisruptionStatus defines the observed state of Disruption.
@@ -92,11 +92,11 @@ type DisruptionStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty" yaml:"conditions,omitempty"`
 
-	Phase     string       `json:"phase"` // Pending, Running, Completed, Failed
-	StartTime *metav1.Time `json:"startTime,omitempty"`
-	EndTime   *metav1.Time `json:"endTime,omitempty"`
+	Phase     string       `json:"phase,omitempty" yaml:"phase,omitempty"` // Pending, Running, Completed, Failed
+	StartTime *metav1.Time `json:"startTime,omitempty" yaml:"startTime,omitempty"`
+	EndTime   *metav1.Time `json:"endTime,omitempty" yaml:"endTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -104,28 +104,28 @@ type DisruptionStatus struct {
 
 // Disruption is the Schema for the disruptions API
 type Disruption struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:",inline" yaml:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
+	metav1.ObjectMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 
 	// spec defines the desired state of Disruption
 	// +required
-	Spec DisruptionSpec `json:"spec"`
+	Spec DisruptionSpec `json:"spec" yaml:"spec"`
 
 	// status defines the observed state of Disruption
 	// +optional
-	Status DisruptionStatus `json:"status,omitzero"`
+	Status DisruptionStatus `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
 // DisruptionList contains a list of Disruption
 type DisruptionList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []Disruption `json:"items"`
+	metav1.TypeMeta `json:",inline" yaml:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	Items           []Disruption `json:"items" yaml:"items"`
 }
 
 func init() {

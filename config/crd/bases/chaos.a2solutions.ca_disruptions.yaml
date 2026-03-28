@@ -40,7 +40,7 @@ spec:
             description: spec defines the desired state of Disruption
             properties:
               podKill:
-                description: PodKill defines the configuration for pod killing disruptions
+                description: PodKill configuration for chaos experiments
                 properties:
                   count:
                     description: Count specifies the number of pods to kill (only
@@ -118,8 +118,7 @@ spec:
                 - killMode
                 type: object
               safety:
-                description: Safety configuration defines constraints to limit disruption
-                  impact and prevent system-wide failures
+                description: Safety configuration to prevent excessive disruption
                 properties:
                   maxDurationSeconds:
                     format: int32
@@ -212,8 +211,6 @@ spec:
               startTime:
                 format: date-time
                 type: string
-            required:
-            - phase
             type: object
         required:
         - spec
