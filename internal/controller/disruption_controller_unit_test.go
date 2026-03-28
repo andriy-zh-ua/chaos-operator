@@ -54,9 +54,32 @@ func newMockErrorClient(statusError error) *mockErrorClient {
 	}
 }
 
+func TestNewDisruptionReconciler(t *testing.T) {
+	// Note: We can't easily test NewDisruptionReconciler initialization without a full ctrl.Manager
+	// This test only verifies basic function callability and error handling
+	// Full testing of field assignments and environment variable handling would require envtest/integration tests
+
+	t.Run("function is callable", func(t *testing.T) {
+		// Create a test scheme
+		scheme := runtime.NewScheme()
+		_ = chaosv1.AddToScheme(scheme)
+
+		// This will panic because we're passing nil, but that's expected
+		// The important thing is that the function exists and is callable
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("Expected panic when calling NewDisruptionReconciler with nil manager")
+			}
+		}()
+
+		_ = NewDisruptionReconciler(nil)
+	})
+}
+
 func TestSetupWithManager(t *testing.T) {
 	// This test verifies that SetupWithManager has the correct signature and basic behavior
 	// Full integration testing of controller setup is typically done in envtest/integration tests
+
 	t.Run("basic function signature test", func(t *testing.T) {
 		// Create a test scheme
 		scheme := runtime.NewScheme()
