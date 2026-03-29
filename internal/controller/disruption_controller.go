@@ -366,7 +366,7 @@ func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *c
 	// Get running pods
 	pods, err := r.getTargetPods(ctx, disruption)
 	if err != nil {
-		return fmt.Errorf("Failed to get target pods: %w", err)
+		return fmt.Errorf("failed to get target pods: %w", err)
 	}
 
 	if len(pods) == 0 {
@@ -431,7 +431,7 @@ func (r *DisruptionReconciler) getTargetPods(ctx context.Context, disruption *ch
 	// Builds label selector (nil selector = match everything, as per k8s convention)
 	selector, err := metav1.LabelSelectorAsSelector(podKillSpec.Selector)
 	if err != nil {
-		return nil, fmt.Errorf("Invalid label selector: %w", err)
+		return nil, fmt.Errorf("invalid label selector: %w", err)
 	}
 
 	// Lists pods in a specific namespace only (namespace-scoped CR)
@@ -445,7 +445,7 @@ func (r *DisruptionReconciler) getTargetPods(ctx context.Context, disruption *ch
 
 	// Executes the list operation translating to a Kubernetes API call
 	if err := r.List(ctx, podList, listOpts...); err != nil {
-		return nil, fmt.Errorf("Failed to list pods: %w", err)
+		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	// Filters to running pods only
