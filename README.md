@@ -8,7 +8,12 @@ The Chaos Operator provides controlled chaos experiments on Kubernetes clusters,
 
 ## Features
 
-- **Pod Kill Chaos**: Terminate pods to test application resilience
+- **Pod Kill Chaos**: Terminate pods to test application resilience with flexible targeting:
+  - **Namespace Scope**: Limit chaos to specific namespaces for isolated testing
+  - **Cluster Scope**: Apply chaos across all namespaces or specific namespace lists for cluster-wide resilience testing
+  - **Safety Limits**: Configurable safeguards to prevent excessive disruption
+  - **System Namespace Protection**: Automatic protection of critical system namespaces
+  - **Status Tracking**: Real-time visibility into chaos execution and impact
 - *To be continued...*
 
 ## API Types
@@ -25,6 +30,7 @@ metadata:
   namespace: default
 spec:
   podKill:
+    scope: namespace  # or "cluster" for cluster-wide chaos
     selector:
       matchLabels:
         app: my-app
@@ -38,6 +44,56 @@ spec:
     maxPercentageAffected: 20
 ```
 
+### Disruption Scope
+
+The operator supports two disruption scopes:
+
+#### Namespace Scope (Default)
+Chaos is limited to pods within the disruption's namespace:
+
+```yaml
+apiVersion: chaos.a2solutions.ca/v1
+kind: Disruption
+metadata:
+  name: namespace-chaos
+  namespace: production
+spec:
+  podKill:
+    scope: namespace  # Affects only pods in "production" namespace
+    selector:
+      matchLabels:
+        app: nginx
+    killMode: "fixed-count"
+    count: 2
+```
+
+#### Cluster Scope
+Chaos affects pods across specified namespaces in the cluster:
+
+```yaml
+apiVersion: chaos.a2solutions.ca/v1
+kind: Disruption
+metadata:
+  name: cluster-chaos
+  namespace: chaos-system  # Where the disruption CR lives
+spec:
+  podKill:
+    scope: cluster  # Affects pods in specified namespaces
+    namespaces:    # Optional: specify which namespaces to target
+    - production
+    - staging
+    - frontend
+    selector:
+      matchLabels:
+        app: nginx
+    killMode: "fixed-count"
+    count: 5
+```
+
+**Use Cases:**
+- **Namespace scope**: Test specific service resilience, environment isolation, gradual rollout
+- **Cluster scope**: Test cluster-wide resilience, dependency validation, disaster recovery
+
 ### Safety Configuration
 
 Safety limits prevent excessive chaos:
@@ -45,6 +101,29 @@ Safety limits prevent excessive chaos:
 - **MaxDurationSeconds**: Maximum experiment duration per disruption cycle (default: 300s)
 - **MaxPodsAffected**: Maximum number of pods affected per reconciliation cycle (default: 1)
 - **MaxPercentageAffected**: Maximum percentage of pods affected per reconciliation cycle (default: 10%)
+
+### Status Tracking
+
+The operator provides detailed status tracking for chaos experiments:
+
+```yaml
+status:
+  phase: "Running"  # Pending, Running, Completed, Failed
+  startTime: "2024-01-15T10:00:00Z"
+  endTime: null
+  podsAffected: 5        # Number of pods affected in last execution
+  lastExecution: "2024-01-15T10:05:00Z"  # Timestamp of last execution
+  conditions:
+  - type: "Available"
+    status: "True"
+    lastTransitionTime: "2024-01-15T10:00:00Z"
+```
+
+**Status Fields:**
+- **Phase**: Current disruption state (Pending, Running, Completed, Failed)
+- **PodsAffected**: Number of pods affected by the last chaos execution
+- **LastExecution**: Timestamp of the most recent execution attempt
+- **StartTime/EndTime**: When the disruption started and completed/failed
 
 ## Environment Variables
 
@@ -56,6 +135,9 @@ CHAOS_DEFAULT_DURATION_SECONDS=300
 CHAOS_DEFAULT_MAX_PODS=1
 CHAOS_DEFAULT_MAX_PERCENTAGE=10
 
+# System Namespace Protection
+CHAOS_SYSTEM_NAMESPACES=kube-system,kube-public,gatekeeper-system,istio-system,default
+
 # Limits
 CHAOS_MAX_COUNT_LIMIT=100
 CHAOS_MAX_GRACE_PERIOD_SECONDS=300
@@ -63,6 +145,17 @@ CHAOS_MAX_GRACE_PERIOD_SECONDS=300
 # Monitoring
 CHAOS_MONITORING_REQUEUE_INTERVAL=30
 ```
+
+### System Namespace Protection
+
+The operator protects critical system namespaces from chaos experiments. Configure protected namespaces via the `CHAOS_SYSTEM_NAMESPACES` environment variable:
+
+```bash
+# Default protection (kube-system, kube-public, gatekeeper-system, istio-system, default)
+CHAOS_SYSTEM_NAMESPACES=kube-system,kube-public,gatekeeper-system,istio-system,default
+```
+
+**Important**: System namespaces are always protected regardless of disruption scope (namespace or cluster).
 
 ## Development
 
