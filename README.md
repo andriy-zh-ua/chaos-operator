@@ -42,9 +42,9 @@ spec:
 
 Safety limits prevent excessive chaos:
 
-- **MaxDurationSeconds**: Maximum experiment duration (default: 300s)
-- **MaxPodsAffected**: Maximum number of pods affected (default: 1)
-- **MaxPercentageAffected**: Maximum percentage of pods affected (default: 10%)
+- **MaxDurationSeconds**: Maximum experiment duration per disruption cycle (default: 300s)
+- **MaxPodsAffected**: Maximum number of pods affected per reconciliation cycle (default: 1)
+- **MaxPercentageAffected**: Maximum percentage of pods affected per reconciliation cycle (default: 10%)
 
 ## Environment Variables
 
