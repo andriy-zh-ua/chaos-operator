@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -35,9 +36,9 @@ import (
 
 const (
 	// Safety configuration constants
-	DefaultDurationSeconds       = 300 // 5 minutes
-	DefaultMaxPodsAffected       = 1   // 1 pod
-	DefaultMaxPercentageAffected = 10  // 10%
+	DefaultDurationSeconds       = 300 // 5 minutes per disruption cycle
+	DefaultMaxPodsAffected       = 1   // 1 pod per reconciliation cycle
+	DefaultMaxPercentageAffected = 10  // 10% per reconciliation cycle
 
 	// Reconciliation interval constants
 	MonitoringRequeueInterval = 30 * time.Second
@@ -169,8 +170,19 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Execute PodKill
-	if err := r.executePodKill(ctx, &disruption); err != nil {
+	if err := r.executePodKill(ctx, &disruption, safetyConfig); err != nil {
 		r.Logger.Error(err, "Failed to execute PodKill")
+		// Mark disruption as failed
+		if markErr := r.markDisruptionFailed(ctx, &disruption); markErr != nil {
+			// Return error to trigger exponential backoff and retry until the status update succeeds
+			return ctrl.Result{}, err
+		}
+		// Return error to trigger exponential backoff and retry until the status update succeeds
+		return ctrl.Result{}, err
+	}
+
+	// Update status to show execution completed
+	if err := r.markDisruptionCompleted(ctx, &disruption); err != nil {
 		// Return error to trigger exponential backoff and retry until the status update succeeds
 		return ctrl.Result{}, err
 	}
@@ -291,19 +303,6 @@ func (r *DisruptionReconciler) getInt32Env(key string, defaultValue int32) int32
 	return defaultValue
 }
 
-// getInt64Env parses an environment variable as an int64 with a default value
-// base: 10 = Decimal (0-9),
-//
-//	2 = Binary (0-1),
-//	8 = Octal (0-7),
-//	16 = Hexadecimal (0-9, A-F)
-//
-// bitSize: 0 = Int (platform-dependent, usually 64-bit),
-//
-//	8 = 8-bit (range: -128 to 127),
-//	16 = 16-bit (range: -32,768 to 32,767),
-//	32 = 32-bit (range: -2,147,483,648 to 2,147,483,647),
-//	64 = 64-bit (huge range)
 func (r *DisruptionReconciler) getInt64Env(key string, defaultValue int64) int64 {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
@@ -357,7 +356,133 @@ func (r *DisruptionReconciler) markDisruptionFailed(ctx context.Context, disrupt
 	return r.updateDisruptionStatus(ctx, disruption, PhaseFailed)
 }
 
-// executePodKill performs the actual pod killing logic
-func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *chaosv1.Disruption) error {
+// executePodKill is the core chaos execution logic
+func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *chaosv1.Disruption, safetyConfig chaosv1.SafetyConfig) error {
+	spec := disruption.Spec.PodKill
+	if spec == nil {
+		return fmt.Errorf("podKill spec is nil")
+	}
+
+	// Get running pods
+	pods, err := r.getTargetPods(ctx, disruption)
+	if err != nil {
+		return fmt.Errorf("Failed to get target pods: %w", err)
+	}
+
+	if len(pods) == 0 {
+		r.Logger.Info("No running pods found matching selector", "namespace", disruption.Namespace)
+		return nil
+	}
+
+	// Calculate how many pods we can kill this cycle
+	allowed := r.calculateAllowedKillsPerCycle(safetyConfig, len(pods))
+	if allowed <= 0 {
+		r.Logger.Info("Safety limits reached - no pods will be killed this cycle")
+		return nil
+	}
+
+	r.Logger.Info("Target pods", "count", len(pods))
+
 	return nil
+}
+
+// getTargetPods retrieves pods that match the disruption's selector criteria.
+// It builds a label selector from the pod kill spec and lists matching pods.
+//
+// Arguments:
+//   - ctx: The context for the request
+//   - disruption: The disruption resource containing selector criteria
+//
+// Example label selector:
+//
+//	selector := &andSet{
+//		requirements: []labels.Requirement{
+//			{key:"app", operator:"Equals", values:[]string{"myapp"}},
+//			{key:"tier", operator:"Equals", values:[]string{"frontend"}},
+//		}
+//	}
+//
+// Example list options:
+//
+//	listOpts := []client.ListOption{
+//		&InNamespaceOption{
+//			namespace: "production",
+//		},
+//		&MatchingLabelsSelectorOption{
+//			selector: &andSet{
+//				requirements: []labels.Requirement{
+//					{key:"app", operator:"Equals", values:["myapp"]},
+//					{key:"tier", operator:"Equals", values:["frontend"]},
+//				},
+//			},
+//		},
+//	}
+//
+// Example CLI command:
+//
+//	kubectl get pods --namespace=default --selector="app=myapp,tier=frontend"
+//
+// Returns:
+//   - A slice of matching pods
+//   - An error if the operation failed
+func (r *DisruptionReconciler) getTargetPods(ctx context.Context, disruption *chaosv1.Disruption) ([]corev1.Pod, error) {
+	podKillSpec := disruption.Spec.PodKill
+
+	// Builds label selector (nil selector = match everything, as per k8s convention)
+	selector, err := metav1.LabelSelectorAsSelector(podKillSpec.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("Invalid label selector: %w", err)
+	}
+
+	// Lists pods in a specific namespace only (namespace-scoped CR)
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		// Limits the search to pods in a specific namespace
+		client.InNamespace(disruption.Namespace),
+		// Creates a ListOption that tells Kubernetes: "Only return pods that match this selector"
+		client.MatchingLabelsSelector{Selector: selector},
+	}
+
+	// Executes the list operation translating to a Kubernetes API call
+	if err := r.List(ctx, podList, listOpts...); err != nil {
+		return nil, fmt.Errorf("Failed to list pods: %w", err)
+	}
+
+	// Filters to running pods only
+	var runningPods []corev1.Pod
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodRunning {
+			runningPods = append(runningPods, pod)
+		}
+	}
+
+	return runningPods, nil
+}
+
+// calculateAllowedKillsPerCycle returns the maximum number of pods we may kill in the current reconciliation cycle.
+// It considers the safety configuration and the number of available pods.
+//
+// Arguments:
+// - safetyConfig: The safety configuration to apply
+// - available: The number of available pods
+//
+// Returns:
+// - The maximum number of pods we may kill in the current reconciliation cycle
+func (r *DisruptionReconciler) calculateAllowedKillsPerCycle(safetyConfig chaosv1.SafetyConfig, available int) int {
+	maxAllowed := available
+
+	// Enforce MaxPodsAffected against the currently available pods
+	if safetyConfig.MaxPodsAffected > 0 && int(safetyConfig.MaxPodsAffected) < maxAllowed {
+		maxAllowed = int(safetyConfig.MaxPodsAffected)
+	}
+
+	// Enforce MaxPercentageAffected against the currently available pods
+	if safetyConfig.MaxPercentageAffected > 0 {
+		maxFromPercent := int(float64(available) * float64(safetyConfig.MaxPercentageAffected) / 100.0)
+		if maxFromPercent < maxAllowed {
+			maxAllowed = maxFromPercent
+		}
+	}
+
+	return maxAllowed
 }
