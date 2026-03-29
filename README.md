@@ -80,9 +80,9 @@ spec:
   podKill:
     scope: cluster  # Affects pods in specified namespaces
     namespaces:    # Optional: specify which namespaces to target
-    - production
-    - staging
-    - frontend
+      - production
+      - staging
+      - frontend
     selector:
       matchLabels:
         app: nginx
