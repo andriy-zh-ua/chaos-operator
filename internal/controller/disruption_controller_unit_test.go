@@ -496,7 +496,7 @@ func TestGetSafetyConfig(t *testing.T) {
 	}
 }
 
-func TestGetInt32Env(t *testing.T) {
+func TestParseEnvInt32(t *testing.T) {
 	// Create reconciler
 	r := &DisruptionReconciler{}
 
@@ -550,18 +550,18 @@ func TestGetInt32Env(t *testing.T) {
 				}
 			}
 
-			value := r.getInt32Env(test.envKey, test.defaultValue)
+			value := r.parseEnvInt32(test.envKey, test.defaultValue)
 
 			// Assert if value is not as expected
 			if value != test.expected {
-				t.Errorf("Test %s: getInt32Env(%s, %d) = %d, want %d",
+				t.Errorf("Test %s: parseEnvInt32(%s, %d) = %d, want %d",
 					test.name, test.envKey, test.defaultValue, value, test.expected)
 			}
 		})
 	}
 }
 
-func TestGetInt64Env(t *testing.T) {
+func TestParseEnvInt64(t *testing.T) {
 	// Create reconciler
 	r := &DisruptionReconciler{}
 
@@ -615,11 +615,11 @@ func TestGetInt64Env(t *testing.T) {
 				}
 			}
 
-			value := r.getInt64Env(test.envKey, test.defaultValue)
+			value := r.parseEnvInt64(test.envKey, test.defaultValue)
 
 			// Assert if value is not as expected
 			if value != test.expected {
-				t.Errorf("Test %s: getInt64Env(%s, %d) = %d, want %d",
+				t.Errorf("Test %s: parseEnvInt64(%s, %d) = %d, want %d",
 					test.name, test.envKey, test.defaultValue, value, test.expected)
 			}
 		})

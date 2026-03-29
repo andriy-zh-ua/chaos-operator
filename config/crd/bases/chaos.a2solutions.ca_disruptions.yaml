@@ -43,8 +43,9 @@ spec:
                 description: PodKill configuration for chaos experiments
                 properties:
                   count:
-                    description: Count specifies the number of pods to kill (only
-                      used when KillMode is "fixed-count")
+                    description: |-
+                      Count is only respected when KillMode=fixed-count.
+                      Count specifies the number of pods to kill.
                     format: int32
                     minimum: 1
                     type: integer
@@ -66,6 +67,18 @@ spec:
                     - random
                     - all
                     - fixed-count
+                    type: string
+                  namespaces:
+                    description: |-
+                      Namespaces is only respected when Scope=cluster.
+                      If empty, targets all non-system namespaces.
+                    items:
+                      type: string
+                    type: array
+                  scope:
+                    default: namespace
+                    description: Scope defines the scope of the disruption (namespace
+                      or cluster)
                     type: string
                   selector:
                     description: Selector defines the label selector to identify which
@@ -116,6 +129,7 @@ spec:
                     x-kubernetes-map-type: atomic
                 required:
                 - killMode
+                - scope
                 type: object
               safety:
                 description: Safety configuration to prevent excessive disruption
@@ -204,11 +218,23 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               endTime:
+                description: EndTime is when the disruption completed or failed
+                format: date-time
+                type: string
+              lastExecution:
+                description: LastExecution is the timestamp of the last execution
+                  attempt
                 format: date-time
                 type: string
               phase:
+                description: Phase represents the current phase of the disruption
                 type: string
+              podsAffected:
+                description: PodsAffected is the number of pods affected by the disruption
+                format: int32
+                type: integer
               startTime:
+                description: StartTime is when the disruption started execution
                 format: date-time
                 type: string
             type: object

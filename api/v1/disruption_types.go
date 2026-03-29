@@ -39,14 +39,32 @@ type DisruptionSpec struct {
 	PodKill *PodKillSpec `json:"podKill,omitempty" yaml:"podKill,omitempty"`
 }
 
+// SafetyConfig defines safety limits for chaos experiments
 type SafetyConfig struct {
 	MaxDurationSeconds    int32 `json:"maxDurationSeconds,omitempty" yaml:"maxDurationSeconds,omitempty"`       // Maximum time disruption can run
 	MaxPodsAffected       int32 `json:"maxPodsAffected,omitempty" yaml:"maxPodsAffected,omitempty"`             // Maximum number of pods that can be affected
 	MaxPercentageAffected int32 `json:"maxPercentageAffected,omitempty" yaml:"maxPercentageAffected,omitempty"` // Maximum percentage of pods that can be affected (0-100)
 }
 
+// DisruptionScope defines the scope of the disruption
+type DisruptionScope string
+
+const (
+	DisruptionScopeNamespace DisruptionScope = "namespace"
+	DisruptionScopeCluster   DisruptionScope = "cluster"
+)
+
 // PodKillSpec defines the configuration for pod killing disruptions
 type PodKillSpec struct {
+	// Scope defines the scope of the disruption (namespace or cluster)
+	// +kubebuilder:default="namespace"
+	Scope DisruptionScope `json:"scope" yaml:"scope"`
+
+	// Namespaces is only respected when Scope=cluster.
+	// If empty, targets all non-system namespaces.
+	// +optional
+	Namespaces []string `json:"namespaces,omitempty" yaml:"namespaces,omitempty"`
+
 	// Selector defines the label selector to identify which pods to target
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty" yaml:"selector,omitempty"`
@@ -60,7 +78,8 @@ type PodKillSpec struct {
 	// +kubebuilder:default="random"
 	KillMode string `json:"killMode" yaml:"killMode"`
 
-	// Count specifies the number of pods to kill (only used when KillMode is "fixed-count")
+	// Count is only respected when KillMode=fixed-count.
+	// Count specifies the number of pods to kill.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Count int32 `json:"count,omitempty" yaml:"count,omitempty"`
@@ -94,9 +113,20 @@ type DisruptionStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" yaml:"conditions,omitempty"`
 
-	Phase     string       `json:"phase,omitempty" yaml:"phase,omitempty"` // Pending, Running, Completed, Failed
+	// Phase represents the current phase of the disruption
+	Phase string `json:"phase,omitempty" yaml:"phase,omitempty"` // Pending, Running, Completed, Failed
+
+	// StartTime is when the disruption started execution
 	StartTime *metav1.Time `json:"startTime,omitempty" yaml:"startTime,omitempty"`
-	EndTime   *metav1.Time `json:"endTime,omitempty" yaml:"endTime,omitempty"`
+
+	// EndTime is when the disruption completed or failed
+	EndTime *metav1.Time `json:"endTime,omitempty" yaml:"endTime,omitempty"`
+
+	// PodsAffected is the number of pods affected by the disruption
+	PodsAffected int32 `json:"podsAffected,omitempty" yaml:"podsAffected,omitempty"`
+
+	// LastExecution is the timestamp of the last execution attempt
+	LastExecution *metav1.Time `json:"lastExecution,omitempty" yaml:"lastExecution,omitempty"`
 }
 
 // +kubebuilder:object:root=true

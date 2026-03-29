@@ -20,7 +20,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -53,6 +55,15 @@ const (
 	PhaseRunning   = "Running"
 )
 
+// Default system namespaces
+var DefaultSystemNamespaces = []string{
+	"kube-system",       // Cluster management namespace
+	"kube-public",       // Public cluster namespace
+	"gatekeeper-system", // Security policy namespace
+	"istio-system",      // Service mesh namespace
+	"default",           // Default namespace
+}
+
 // DisruptionReconciler reconciles a Disruption object
 type DisruptionReconciler struct {
 	client.Client
@@ -63,6 +74,7 @@ type DisruptionReconciler struct {
 	monitoringInterval    time.Duration
 	maxCountLimit         int32
 	maxGracePeriodSeconds *int64
+	systemNamespaces      map[string]bool // Cache of protected system namespaces
 }
 
 // NewDisruptionReconciler creates a new disruption reconciler
@@ -74,22 +86,25 @@ func NewDisruptionReconciler(mgr ctrl.Manager) *DisruptionReconciler {
 		Logger: ctrl.Log.WithName("controllers").WithName("Disruption"),
 	}
 
-	// Initialize defaults
+	// Initialize default safety configuration
 	r.defaultSafetyConfig = chaosv1.SafetyConfig{
-		MaxDurationSeconds:    r.getInt32Env("CHAOS_DEFAULT_DURATION_SECONDS", DefaultDurationSeconds),
-		MaxPodsAffected:       r.getInt32Env("CHAOS_DEFAULT_MAX_PODS", DefaultMaxPodsAffected),
-		MaxPercentageAffected: r.getInt32Env("CHAOS_DEFAULT_MAX_PERCENTAGE", DefaultMaxPercentageAffected),
+		MaxDurationSeconds:    r.parseEnvInt32("CHAOS_DEFAULT_DURATION_SECONDS", DefaultDurationSeconds),
+		MaxPodsAffected:       r.parseEnvInt32("CHAOS_DEFAULT_MAX_PODS", DefaultMaxPodsAffected),
+		MaxPercentageAffected: r.parseEnvInt32("CHAOS_DEFAULT_MAX_PERCENTAGE", DefaultMaxPercentageAffected),
 	}
 
-	// Set monitoring interval
-	r.monitoringInterval = time.Duration(r.getInt32Env("CHAOS_MONITORING_REQUEUE_INTERVAL", int32(MonitoringRequeueInterval.Seconds()))) * time.Second
+	// Initialize default monitoring interval
+	r.monitoringInterval = time.Duration(r.parseEnvInt32("CHAOS_MONITORING_REQUEUE_INTERVAL", int32(MonitoringRequeueInterval.Seconds()))) * time.Second
 
-	// Set max count limit
-	r.maxCountLimit = r.getInt32Env("CHAOS_MAX_COUNT_LIMIT", MaxCountLimit)
+	// Initialize max count limit
+	r.maxCountLimit = r.parseEnvInt32("CHAOS_MAX_COUNT_LIMIT", MaxCountLimit)
 
-	// Set max grace period limit
-	maxGracePeriod := r.getInt64Env("CHAOS_MAX_GRACE_PERIOD_SECONDS", MaxGracePeriodSeconds)
+	// Initialize max grace period limit
+	maxGracePeriod := r.parseEnvInt64("CHAOS_MAX_GRACE_PERIOD_SECONDS", MaxGracePeriodSeconds)
 	r.maxGracePeriodSeconds = &maxGracePeriod
+
+	// Initialize system namespaces
+	r.systemNamespaces = r.parseEnvSystemNamespaces("CHAOS_SYSTEM_NAMESPACES", DefaultSystemNamespaces)
 
 	return r
 }
@@ -181,12 +196,6 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// Update status to show execution completed
-	if err := r.markDisruptionCompleted(ctx, &disruption); err != nil {
-		// Return error to trigger exponential backoff and retry until the status update succeeds
-		return ctrl.Result{}, err
-	}
-
 	// Requeue to continue monitoring
 	return ctrl.Result{RequeueAfter: MonitoringRequeueInterval}, nil
 }
@@ -203,6 +212,11 @@ func (r *DisruptionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec) error {
 	if spec == nil {
 		return fmt.Errorf("no PodKill specification provided - nothing to disrupt")
+	}
+
+	// Validate scope
+	if spec.Scope != "" && spec.Scope != chaosv1.DisruptionScopeNamespace && spec.Scope != chaosv1.DisruptionScopeCluster {
+		return fmt.Errorf("invalid scope: %s. Must be 'namespace' or 'cluster'", spec.Scope)
 	}
 
 	// Check if selector is nil or empty
@@ -273,7 +287,15 @@ func (r *DisruptionReconciler) getSafetyConfig(disruption chaosv1.Disruption) ch
 	return config
 }
 
-// getInt32Env parses an environment variable as an int32 with a default value
+// parseEnvInt32 loads and parses an environment variable as an int32 with a default value
+//
+// Arguments:
+//   - key: The environment variable key to read
+//   - defaultValue: The default value to use if the environment variable is not set or invalid
+//
+// Returns:
+//   - The parsed int32 value or the default value
+//
 // base: 10 = Decimal (0-9),
 //
 //	2 = Binary (0-1),
@@ -286,7 +308,7 @@ func (r *DisruptionReconciler) getSafetyConfig(disruption chaosv1.Disruption) ch
 //	16 = 16-bit (range: -32,768 to 32,767),
 //	32 = 32-bit (range: -2,147,483,648 to 2,147,483,647),
 //	64 = 64-bit (huge range)
-func (r *DisruptionReconciler) getInt32Env(key string, defaultValue int32) int32 {
+func (r *DisruptionReconciler) parseEnvInt32(key string, defaultValue int32) int32 {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 32); err == nil {
 			r.Logger.Info("Parsed environment variable",
@@ -303,7 +325,15 @@ func (r *DisruptionReconciler) getInt32Env(key string, defaultValue int32) int32
 	return defaultValue
 }
 
-func (r *DisruptionReconciler) getInt64Env(key string, defaultValue int64) int64 {
+// parseEnvInt64 loads and parses an environment variable as an int64 with a default value
+//
+// Arguments:
+//   - key: The environment variable key to read
+//   - defaultValue: The default value to use if the environment variable is not set or invalid
+//
+// Returns:
+//   - The parsed int64 value or the default value
+func (r *DisruptionReconciler) parseEnvInt64(key string, defaultValue int64) int64 {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
 			r.Logger.Info("Parsed environment variable",
@@ -318,6 +348,54 @@ func (r *DisruptionReconciler) getInt64Env(key string, defaultValue int64) int64
 		"value", defaultValue,
 		"reason", "environment variable not set or invalid")
 	return defaultValue
+}
+
+// parseEnvSystemNamespaces loads and parses the system namespaces from environment variable
+//
+// Arguments:
+//   - key: The environment variable key to read
+//   - defaultSystemNamespaces: The default system namespaces to use if the environment variable is not set
+//
+// Returns:
+//   - A map of system namespace names to true
+func (r *DisruptionReconciler) parseEnvSystemNamespaces(key string, defaultSystemNamespaces []string) map[string]bool {
+	// Get from environment variable or use defaults
+	systemNamespacesStr := os.Getenv(key)
+	// Users shouldn't be required to set environment variables
+	if systemNamespacesStr == "" {
+		// Default critical system namespaces
+		systemNamespacesStr = strings.Join(defaultSystemNamespaces, ",")
+	}
+
+	// Parse comma-separated list into map
+	systemNamespaces := make(map[string]bool)
+	for ns := range strings.SplitSeq(systemNamespacesStr, ",") {
+		systemNamespaces[strings.TrimSpace(ns)] = true
+	}
+
+	// Sort namespaces for consistent logging
+	namespaces := make([]string, 0, len(systemNamespaces))
+	for ns := range systemNamespaces {
+		namespaces = append(namespaces, ns)
+	}
+	sort.Strings(namespaces)
+
+	r.Logger.Info("Loaded system namespace protection",
+		"namespaces", namespaces,
+		"count", len(systemNamespaces))
+
+	return systemNamespaces
+}
+
+// isSystemNamespace checks if a namespace is protected from chaos
+//
+// Arguments:
+//   - namespace: The namespace to check
+//
+// Returns:
+//   - true if the namespace is protected, false otherwise
+func (r *DisruptionReconciler) isSystemNamespace(namespace string) bool {
+	return r.systemNamespaces[namespace]
 }
 
 // updateDisruptionStatus updates the disruption status and handles errors
@@ -356,12 +434,31 @@ func (r *DisruptionReconciler) markDisruptionFailed(ctx context.Context, disrupt
 	return r.updateDisruptionStatus(ctx, disruption, PhaseFailed)
 }
 
+// updateDisruptionStatusWithPodsAffected updates the disruption status with pods affected information
+func (r *DisruptionReconciler) updateDisruptionStatusWithPodsAffected(ctx context.Context, disruption *chaosv1.Disruption, podsAffected int32) error {
+	// Update the status fields
+	disruption.Status.PodsAffected = podsAffected
+
+	// Update the status in Kubernetes
+	if err := r.Status().Update(ctx, disruption); err != nil {
+		r.Logger.Error(err, "Failed to update disruption status")
+		return fmt.Errorf("failed to update disruption status: %w", err)
+	}
+
+	r.Logger.Info("Updated disruption status", "podsAffected", podsAffected)
+	return nil
+}
+
 // executePodKill is the core chaos execution logic
 func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *chaosv1.Disruption, safetyConfig chaosv1.SafetyConfig) error {
 	spec := disruption.Spec.PodKill
 	if spec == nil {
 		return fmt.Errorf("podKill spec is nil")
 	}
+
+	// Update last execution timestamp
+	now := metav1.Now()
+	disruption.Status.LastExecution = &now
 
 	// Get running pods
 	pods, err := r.getTargetPods(ctx, disruption)
@@ -371,22 +468,26 @@ func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *c
 
 	if len(pods) == 0 {
 		r.Logger.Info("No running pods found matching selector", "namespace", disruption.Namespace)
-		return nil
+		// Update status to show no pods affected
+		return r.updateDisruptionStatusWithPodsAffected(ctx, disruption, 0)
 	}
 
 	// Calculate how many pods we can kill this cycle
 	allowed := r.calculateAllowedKillsPerCycle(safetyConfig, len(pods))
 	if allowed <= 0 {
 		r.Logger.Info("Safety limits reached - no pods will be killed this cycle")
-		return nil
+		// Update status to show no pods affected due to safety limits
+		return r.updateDisruptionStatusWithPodsAffected(ctx, disruption, 0)
 	}
 
 	r.Logger.Info("Target pods", "count", len(pods))
 
-	return nil
+	// TODO: Actually kill pods here
+	// For now, just update status to show how many pods would be affected
+	return r.updateDisruptionStatusWithPodsAffected(ctx, disruption, int32(allowed))
 }
 
-// getTargetPods retrieves pods that match the disruption's selector criteria.
+// getTargetPods returns running pods matching the disruption's selector criteria, respecting scope and safety filters.
 // It builds a label selector from the pod kill spec and lists matching pods.
 //
 // Arguments:
@@ -434,25 +535,59 @@ func (r *DisruptionReconciler) getTargetPods(ctx context.Context, disruption *ch
 		return nil, fmt.Errorf("invalid label selector: %w", err)
 	}
 
-	// Lists pods in a specific namespace only (namespace-scoped CR)
-	podList := &corev1.PodList{}
-	listOpts := []client.ListOption{
-		// Limits the search to pods in a specific namespace
-		client.InNamespace(disruption.Namespace),
-		// Creates a ListOption that tells Kubernetes: "Only return pods that match this selector"
-		client.MatchingLabelsSelector{Selector: selector},
+	var targetNamespaces []string
+
+	switch podKillSpec.Scope {
+	case chaosv1.DisruptionScopeNamespace, "": // Treat empty as namespace (safe default)
+		// Check if the namespace is protected
+		if r.isSystemNamespace(disruption.Namespace) {
+			return nil, fmt.Errorf("cannot run chaos in protected system namespace: %s", disruption.Namespace)
+		}
+		targetNamespaces = []string{disruption.Namespace}
+
+	case chaosv1.DisruptionScopeCluster:
+		if len(podKillSpec.Namespaces) > 0 {
+			// Use the specified namespaces potentially could include system namespaces
+			targetNamespaces = podKillSpec.Namespaces
+		} else {
+			// No namespaces specified -> target ALL except system namespaces ones
+			nsList := &corev1.NamespaceList{}
+			// List all namespaces
+			if err := r.List(ctx, nsList); err != nil {
+				return nil, fmt.Errorf("failed to list namespaces for cluster scope: %w", err)
+			}
+			// Filter out system namespaces
+			for _, ns := range nsList.Items {
+				if !r.isSystemNamespace(ns.Name) {
+					targetNamespaces = append(targetNamespaces, ns.Name)
+				}
+			}
+		}
+	default:
+		return nil, fmt.Errorf("unknown scope: %s", podKillSpec.Scope)
 	}
 
-	// Executes the list operation translating to a Kubernetes API call
-	if err := r.List(ctx, podList, listOpts...); err != nil {
-		return nil, fmt.Errorf("failed to list pods: %w", err)
-	}
-
-	// Filters to running pods only
+	// Loop through each target namespace and list pods
 	var runningPods []corev1.Pod
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodRunning {
-			runningPods = append(runningPods, pod)
+	for _, ns := range targetNamespaces {
+		// Skip system namespaces
+		if r.isSystemNamespace(ns) {
+			r.Logger.Info("Skipping protected system namespace", "namespace", ns)
+			continue
+		}
+
+		// List pods in each target namespace
+		podList := &corev1.PodList{}
+		if err := r.List(ctx, podList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+			r.Logger.Error(err, "Failed to list pods in namespace", "namespace", ns)
+			continue
+		}
+
+		// Filter running pods
+		for _, pod := range podList.Items {
+			if pod.Status.Phase == corev1.PodRunning {
+				runningPods = append(runningPods, pod)
+			}
 		}
 	}
 
