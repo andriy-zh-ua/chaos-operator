@@ -115,6 +115,7 @@ func NewDisruptionReconciler(mgr ctrl.Manager) *DisruptionReconciler {
 // +kubebuilder:rbac:groups=chaos.a2solutions.ca,resources=disruptions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chaos.a2solutions.ca,resources=disruptions/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
