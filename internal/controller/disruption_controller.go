@@ -57,11 +57,13 @@ const (
 
 // Default system namespaces
 var DefaultSystemNamespaces = []string{
-	"kube-system",       // Cluster management namespace
-	"kube-public",       // Public cluster namespace
-	"gatekeeper-system", // Security policy namespace
-	"istio-system",      // Service mesh namespace
-	"default",           // Default namespace
+	"kube-system",           // Cluster management namespace
+	"kube-public",           // Public cluster namespace
+	"kube-node-lease",       // Node lease system namespace
+	"chaos-operator-system", // Chaos operator namespace (CRITICAL!)
+	"gatekeeper-system",     // Security policy namespace
+	"istio-system",          // Service mesh namespace
+	"default",               // Default namespace
 }
 
 // DisruptionReconciler reconciles a Disruption object
@@ -112,6 +114,7 @@ func NewDisruptionReconciler(mgr ctrl.Manager) *DisruptionReconciler {
 // +kubebuilder:rbac:groups=chaos.a2solutions.ca,resources=disruptions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chaos.a2solutions.ca,resources=disruptions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chaos.a2solutions.ca,resources=disruptions/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
