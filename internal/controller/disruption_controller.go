@@ -52,6 +52,11 @@ const (
 	PhaseCompleted = "Completed"
 	PhaseFailed    = "Failed"
 	PhaseRunning   = "Running"
+
+	// PodKill kill mode constants
+	KillModeFixedCount = "fixed-count"
+	KillModeRandom     = "random"
+	KillModeAll        = "all"
 )
 
 // Default system namespaces
@@ -75,9 +80,8 @@ type DisruptionReconciler struct {
 	Logger   logr.Logger
 	Recorder record.EventRecorder
 
-	defaultSafetyConfig         chaosv1.SafetyConfig
-	systemNamespaces            map[string]bool
-	monitoringReconcileInterval time.Duration
+	defaultSafetyConfig chaosv1.SafetyConfig
+	systemNamespaces    map[string]bool
 }
 
 // NewDisruptionReconciler creates a new disruption reconciler
@@ -244,12 +248,12 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec, safety
 	}
 
 	// Validate count only when killMode is fixed-count
-	if spec.KillMode != "fixed-count" && spec.Count > 0 {
+	if spec.KillMode != KillModeFixedCount && spec.Count > 0 {
 		return fmt.Errorf("podKill.count is only valid when killMode is 'fixed-count', but killMode is '%s'", spec.KillMode)
 	}
 
 	// Validate count is positive when killMode is fixed-count
-	if spec.KillMode == "fixed-count" && spec.Count <= 0 {
+	if spec.KillMode == KillModeFixedCount && spec.Count <= 0 {
 		return fmt.Errorf("podKill.count must be > 0 when killMode is 'fixed-count'")
 	}
 
@@ -259,7 +263,7 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec, safety
 	}
 
 	// Validate count does not exceed safety PodsAffected
-	if spec.KillMode == "fixed-count" && safetyConfig.PodsAffected > 0 && spec.Count > safetyConfig.PodsAffected {
+	if spec.KillMode == KillModeFixedCount && safetyConfig.PodsAffected > 0 && spec.Count > safetyConfig.PodsAffected {
 		return fmt.Errorf("podKill.count '%d' exceeds safety PodsAffected limit of %d", spec.Count, safetyConfig.PodsAffected)
 	}
 
@@ -770,10 +774,10 @@ func (r *DisruptionReconciler) selectPodsToKill(pods []corev1.Pod, spec *chaosv1
 	}
 
 	switch spec.KillMode {
-	case "all":
+	case KillModeAll:
 		return pods[:min(len(pods), allowed)]
 
-	case "fixed-count":
+	case KillModeFixedCount:
 		count := min(int(spec.Count), allowed, len(pods))
 		return pods[:count]
 
@@ -808,11 +812,11 @@ func (r *DisruptionReconciler) getRandomPods(pods []corev1.Pod, allowed int) []c
 	return shuffled[:min(len(shuffled), allowed)]
 }
 
-// killPods deletes the specified pods and updates the disruption status with the number of pods affected
+// killPods deletes the specified pods and records events
 //
 // Arguments:
-// - ctx: The context for the operation
-// - pods: The pods to delete
+// - ctx: The context for the request
+// - pods: The pods to kill
 // - disruption: The disruption object to update
 //
 // Returns:
@@ -836,9 +840,26 @@ func (r *DisruptionReconciler) killPods(ctx context.Context, pods []corev1.Pod, 
 	for _, pod := range pods {
 		if err := r.Delete(ctx, &pod, deleteOpts); err != nil {
 			if !errors.IsNotFound(err) {
-				r.Logger.Error(err, "Failed to delete pod", "pod", pod.Name, "namespace", pod.Namespace)
+				r.Recorder.Eventf(
+					disruption,
+					corev1.EventTypeWarning,
+					"PodKillFailed",
+					"Failed to kill pod %s in namespace %s: %v",
+					pod.Name,
+					pod.Namespace,
+					err,
+				)
+				r.Logger.Error(err, "Failed to kill pod", "pod", pod.Name, "namespace", pod.Namespace)
 			} else {
-				r.Logger.Info("Pod already deleted", "pod", pod.Name, "namespace", pod.Namespace)
+				r.Recorder.Eventf(
+					disruption,
+					corev1.EventTypeNormal,
+					"PodAlreadyKilled",
+					"Pod %s in namespace %s was already killed",
+					pod.Name,
+					pod.Namespace,
+				)
+				r.Logger.Info("Pod already killed", "pod", pod.Name, "namespace", pod.Namespace)
 			}
 			continue
 		}
