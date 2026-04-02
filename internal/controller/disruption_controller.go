@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -28,26 +29,24 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	chaosv1 "github.com/andriy-zh-ua/chaos-operator/api/v1"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 )
 
 const (
 	// Safety configuration constants
-	DefaultDurationSeconds       = 300 // 5 minutes per disruption cycle
-	DefaultMaxPodsAffected       = 1   // 1 pod per reconciliation cycle
-	DefaultMaxPercentageAffected = 10  // 10% per reconciliation cycle
-
-	// Reconciliation interval constants
-	MonitoringRequeueInterval = 30 * time.Second
-
-	// Validation limits constants
-	MaxCountLimit         = 100 // Maximum allowed count for fixed-count mode
-	MaxGracePeriodSeconds = 300 // Maximum allowed grace period in seconds (equal to default duration)
+	DefaultDurationSeconds             = 300             // Default duration for a disruption in seconds (5 minutes)
+	DefaultPodsAffected                = 1               // Default pods affected per reconciliation cycle (Scope: Per-cycle safety limit)
+	DefaultPercentageAffected          = 10              // Default percentage of pods affected per reconciliation cycle (Scope: Per-cycle safety limit)
+	DefaultCountLimit                  = 100             // Absolute default count value a user can specify in their spec.Count (Scope: Global safety limit)
+	DefaultGracePeriodSeconds          = 300             // Default grace period in seconds (equal to default duration)
+	DefaultMonitoringReconcileInterval = 5 * time.Second // Default monitoring reconcile interval (5 seconds)
 
 	// Disruption phase constants
 	PhaseCompleted = "Completed"
@@ -66,44 +65,40 @@ var DefaultSystemNamespaces = []string{
 	"default",               // Default namespace
 }
 
+// Global random source for pod selection - initialized once for better performance
+var globalRandSource = rand.New(rand.NewSource(time.Now().UnixNano()))
+
 // DisruptionReconciler reconciles a Disruption object
 type DisruptionReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Logger logr.Logger
+	Scheme   *runtime.Scheme
+	Logger   logr.Logger
+	Recorder record.EventRecorder
 
-	defaultSafetyConfig   chaosv1.SafetyConfig
-	monitoringInterval    time.Duration
-	maxCountLimit         int32
-	maxGracePeriodSeconds *int64
-	systemNamespaces      map[string]bool // Cache of protected system namespaces
+	defaultSafetyConfig         chaosv1.SafetyConfig
+	systemNamespaces            map[string]bool
+	monitoringReconcileInterval time.Duration
 }
 
 // NewDisruptionReconciler creates a new disruption reconciler
 func NewDisruptionReconciler(mgr ctrl.Manager) *DisruptionReconciler {
 	// Create a new reconciler
 	r := &DisruptionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Logger: ctrl.Log.WithName("controllers").WithName("Disruption"),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Logger:   ctrl.Log.WithName("controllers").WithName("Disruption"),
+		Recorder: mgr.GetEventRecorderFor("disruption-controller"),
 	}
 
 	// Initialize default safety configuration
 	r.defaultSafetyConfig = chaosv1.SafetyConfig{
-		MaxDurationSeconds:    r.parseEnvInt32("CHAOS_DEFAULT_DURATION_SECONDS", DefaultDurationSeconds),
-		MaxPodsAffected:       r.parseEnvInt32("CHAOS_DEFAULT_MAX_PODS", DefaultMaxPodsAffected),
-		MaxPercentageAffected: r.parseEnvInt32("CHAOS_DEFAULT_MAX_PERCENTAGE", DefaultMaxPercentageAffected),
+		DurationSeconds:             r.parseEnvInt32("CHAOS_DEFAULT_DURATION_SECONDS", DefaultDurationSeconds),
+		PodsAffected:                r.parseEnvInt32("CHAOS_DEFAULT_PODS_AFFECTED", DefaultPodsAffected),
+		PercentageAffected:          r.parseEnvInt32("CHAOS_DEFAULT_PERCENTAGE_AFFECTED", DefaultPercentageAffected),
+		CountLimit:                  r.parseEnvInt32("CHAOS_DEFAULT_COUNT_LIMIT", DefaultCountLimit),
+		GracePeriodSeconds:          r.parseEnvInt64("CHAOS_DEFAULT_GRACE_PERIOD_SECONDS", DefaultGracePeriodSeconds),
+		MonitoringReconcileInterval: time.Duration(r.parseEnvInt32("CHAOS_DEFAULT_MONITORING_RECONCILE_INTERVAL", int32(DefaultMonitoringReconcileInterval.Seconds()))) * time.Second,
 	}
-
-	// Initialize default monitoring interval
-	r.monitoringInterval = time.Duration(r.parseEnvInt32("CHAOS_MONITORING_REQUEUE_INTERVAL", int32(MonitoringRequeueInterval.Seconds()))) * time.Second
-
-	// Initialize max count limit
-	r.maxCountLimit = r.parseEnvInt32("CHAOS_MAX_COUNT_LIMIT", MaxCountLimit)
-
-	// Initialize max grace period limit
-	maxGracePeriod := r.parseEnvInt64("CHAOS_MAX_GRACE_PERIOD_SECONDS", MaxGracePeriodSeconds)
-	r.maxGracePeriodSeconds = &maxGracePeriod
 
 	// Initialize system namespaces
 	r.systemNamespaces = r.parseEnvSystemNamespaces("CHAOS_SYSTEM_NAMESPACES", DefaultSystemNamespaces)
@@ -148,8 +143,11 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	r.Logger.Info("Reconciling Disruption", "name", disruption.Name, "namespace", disruption.Namespace)
 
+	// Get safety configuration with defaults
+	safetyConfig := r.getSafetyConfig(disruption)
+
 	// Validate PodKill configuration
-	if err := r.validatePodKill(disruption.Spec.PodKill); err != nil {
+	if err := r.validatePodKill(disruption.Spec.PodKill, safetyConfig); err != nil {
 		r.Logger.Error(err, "Invalid PodKill configuration")
 		if err := r.markDisruptionFailed(ctx, &disruption); err != nil {
 			// Return error to trigger exponential backoff and retry until the status update succeeds
@@ -169,15 +167,17 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.Logger.Info("Disruption started")
 	}
 
-	// Get safety configuration with defaults
-	safetyConfig := r.getSafetyConfig(disruption)
+	// Check if disruption has reached its specified duration
+	if completed, err := r.checkDisruptionDuration(ctx, &disruption); completed {
+		return ctrl.Result{}, err
+	}
 
 	// Ensures the Disruption cannot run longer than allowed
-	if safetyConfig.MaxDurationSeconds > 0 {
+	if safetyConfig.DurationSeconds > 0 {
 		duration := time.Since(disruption.Status.StartTime.Time)
 
 		// If the disruption has run longer than the max duration
-		if duration > time.Duration(safetyConfig.MaxDurationSeconds)*time.Second {
+		if duration > time.Duration(safetyConfig.DurationSeconds)*time.Second {
 			if err := r.markDisruptionCompleted(ctx, &disruption); err != nil {
 				// Return error to trigger exponential backoff and retry until the status update succeeds
 				return ctrl.Result{}, err
@@ -201,7 +201,7 @@ func (r *DisruptionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Requeue to continue monitoring
-	return ctrl.Result{RequeueAfter: MonitoringRequeueInterval}, nil
+	return ctrl.Result{RequeueAfter: safetyConfig.MonitoringReconcileInterval}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -213,7 +213,7 @@ func (r *DisruptionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // validatePodKill validates the PodKill specification
-func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec) error {
+func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec, safetyConfig chaosv1.SafetyConfig) error {
 	if spec == nil {
 		return fmt.Errorf("no PodKill specification provided - nothing to disrupt")
 	}
@@ -237,7 +237,7 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec) error 
 			return fmt.Errorf("podKill.duration must be positive, got %v", spec.Duration.Duration)
 		}
 		// Check against maximum allowed duration from safety config
-		maxDuration := time.Duration(r.defaultSafetyConfig.MaxDurationSeconds) * time.Second
+		maxDuration := time.Duration(safetyConfig.DurationSeconds) * time.Second
 		if spec.Duration.Duration > maxDuration {
 			return fmt.Errorf("podKill.duration '%v' exceeds maximum allowed limit of %v", spec.Duration.Duration, maxDuration)
 		}
@@ -254,13 +254,18 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec) error 
 	}
 
 	// Validate count does not exceed maximum limit
-	if spec.Count > r.maxCountLimit {
-		return fmt.Errorf("podKill.count '%d' exceeds maximum allowed limit of %d", spec.Count, r.maxCountLimit)
+	if spec.Count > safetyConfig.CountLimit {
+		return fmt.Errorf("podKill.count '%d' exceeds maximum allowed limit of %d", spec.Count, safetyConfig.CountLimit)
+	}
+
+	// Validate count does not exceed safety PodsAffected
+	if spec.KillMode == "fixed-count" && safetyConfig.PodsAffected > 0 && spec.Count > safetyConfig.PodsAffected {
+		return fmt.Errorf("podKill.count '%d' exceeds safety PodsAffected limit of %d", spec.Count, safetyConfig.PodsAffected)
 	}
 
 	// Validate grace period does not exceed maximum limit
-	if spec.GracePeriodSeconds != nil && r.maxGracePeriodSeconds != nil && *spec.GracePeriodSeconds > *r.maxGracePeriodSeconds {
-		return fmt.Errorf("podKill.gracePeriodSeconds '%d' exceeds maximum allowed limit of %d", *spec.GracePeriodSeconds, *r.maxGracePeriodSeconds)
+	if spec.GracePeriodSeconds != nil && safetyConfig.GracePeriodSeconds > 0 && *spec.GracePeriodSeconds > safetyConfig.GracePeriodSeconds {
+		return fmt.Errorf("podKill.gracePeriodSeconds '%d' exceeds maximum allowed limit of %d", *spec.GracePeriodSeconds, safetyConfig.GracePeriodSeconds)
 	}
 
 	return nil
@@ -271,24 +276,67 @@ func (r *DisruptionReconciler) getSafetyConfig(disruption chaosv1.Disruption) ch
 	if disruption.Spec.Safety == nil {
 		// Return default safety config
 		return chaosv1.SafetyConfig{
-			MaxDurationSeconds:    r.defaultSafetyConfig.MaxDurationSeconds,
-			MaxPodsAffected:       r.defaultSafetyConfig.MaxPodsAffected,
-			MaxPercentageAffected: r.defaultSafetyConfig.MaxPercentageAffected,
+			DurationSeconds:    r.defaultSafetyConfig.DurationSeconds,
+			PodsAffected:       r.defaultSafetyConfig.PodsAffected,
+			PercentageAffected: r.defaultSafetyConfig.PercentageAffected,
+			CountLimit:         r.defaultSafetyConfig.CountLimit,
+			GracePeriodSeconds: r.defaultSafetyConfig.GracePeriodSeconds,
 		}
 	}
 
 	// Apply defaults for missing fields
 	config := *disruption.Spec.Safety
-	if config.MaxDurationSeconds == 0 {
-		config.MaxDurationSeconds = r.defaultSafetyConfig.MaxDurationSeconds
+	if config.DurationSeconds == 0 {
+		config.DurationSeconds = r.defaultSafetyConfig.DurationSeconds
 	}
-	if config.MaxPodsAffected == 0 {
-		config.MaxPodsAffected = r.defaultSafetyConfig.MaxPodsAffected
+	if config.PodsAffected == 0 {
+		config.PodsAffected = r.defaultSafetyConfig.PodsAffected
 	}
-	if config.MaxPercentageAffected == 0 {
-		config.MaxPercentageAffected = r.defaultSafetyConfig.MaxPercentageAffected
+	if config.PercentageAffected == 0 {
+		config.PercentageAffected = r.defaultSafetyConfig.PercentageAffected
+	}
+	if config.CountLimit == 0 {
+		config.CountLimit = r.defaultSafetyConfig.CountLimit
+	}
+	if config.GracePeriodSeconds == 0 {
+		config.GracePeriodSeconds = r.defaultSafetyConfig.GracePeriodSeconds
+	}
+	if config.MonitoringReconcileInterval == 0 {
+		config.MonitoringReconcileInterval = r.defaultSafetyConfig.MonitoringReconcileInterval
 	}
 	return config
+}
+
+// checkDisruptionDuration checks if the disruption has reached its specified duration
+//
+// Arguments:
+//   - ctx: The context for the request
+//   - disruption: The disruption to check
+//
+// Returns:
+//   - bool: true if the disruption should be completed due to duration
+//   - error: error if marking disruption as completed fails
+func (r *DisruptionReconciler) checkDisruptionDuration(ctx context.Context, disruption *chaosv1.Disruption) (bool, error) {
+	// Check if PodKill spec exists and has a duration set
+	if disruption.Spec.PodKill == nil || disruption.Spec.PodKill.Duration == nil {
+		return false, nil
+	}
+
+	// Calculate elapsed time since disruption started
+	elapsed := time.Since(disruption.Status.StartTime.Time)
+
+	// Check if elapsed time meets or exceeds the specified duration
+	if elapsed >= disruption.Spec.PodKill.Duration.Duration {
+		if err := r.markDisruptionCompleted(ctx, disruption); err != nil {
+			return true, fmt.Errorf("failed to mark disruption as completed: %w", err)
+		}
+		r.Logger.Info("Disruption completed due to user-specified duration",
+			"duration", disruption.Spec.PodKill.Duration.Duration,
+			"elapsed", elapsed)
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // parseEnvInt32 loads and parses an environment variable as an int32 with a default value
@@ -411,8 +459,55 @@ func (r *DisruptionReconciler) updateDisruptionStatus(ctx context.Context, disru
 	switch phase {
 	case PhaseRunning:
 		disruption.Status.StartTime = &now
-	case PhaseCompleted, PhaseFailed:
+
+		r.setCondition(
+			disruption,
+			"Progressing",
+			metav1.ConditionTrue,
+			"DisruptionStarted",
+			"Chaos disruption started",
+		)
+
+		r.Recorder.Eventf(
+			disruption,
+			corev1.EventTypeNormal,
+			"DisruptionStarted",
+			"Chaos disruption started",
+		)
+	case PhaseCompleted:
 		disruption.Status.EndTime = &now
+
+		r.setCondition(
+			disruption,
+			"Available",
+			metav1.ConditionFalse,
+			"DisruptionCompleted",
+			"Chaos disruption completed successfully",
+		)
+
+		r.Recorder.Eventf(
+			disruption,
+			corev1.EventTypeNormal,
+			"DisruptionCompleted",
+			"Chaos disruption completed successfully",
+		)
+	case PhaseFailed:
+		disruption.Status.EndTime = &now
+
+		r.setCondition(
+			disruption,
+			"Degraded",
+			metav1.ConditionTrue,
+			"DisruptionFailed",
+			"Chaos disruption failed",
+		)
+
+		r.Recorder.Eventf(
+			disruption,
+			corev1.EventTypeWarning,
+			"DisruptionFailed",
+			"Chaos disruption failed",
+		)
 	}
 
 	if err := r.Status().Update(ctx, disruption); err != nil {
@@ -438,21 +533,6 @@ func (r *DisruptionReconciler) markDisruptionFailed(ctx context.Context, disrupt
 	return r.updateDisruptionStatus(ctx, disruption, PhaseFailed)
 }
 
-// updateDisruptionStatusWithPodsAffected updates the disruption status with pods affected information
-func (r *DisruptionReconciler) updateDisruptionStatusWithPodsAffected(ctx context.Context, disruption *chaosv1.Disruption, podsAffected int32) error {
-	// Update the status fields
-	disruption.Status.PodsAffected = podsAffected
-
-	// Update the status in Kubernetes
-	if err := r.Status().Update(ctx, disruption); err != nil {
-		r.Logger.Error(err, "Failed to update disruption status")
-		return fmt.Errorf("failed to update disruption status: %w", err)
-	}
-
-	r.Logger.Info("Updated disruption status", "podsAffected", podsAffected)
-	return nil
-}
-
 // executePodKill is the core chaos execution logic
 func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *chaosv1.Disruption, safetyConfig chaosv1.SafetyConfig) error {
 	spec := disruption.Spec.PodKill
@@ -472,23 +552,67 @@ func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *c
 
 	if len(pods) == 0 {
 		r.Logger.Info("No running pods found matching selector", "namespace", disruption.Namespace)
-		// Update status to show no pods affected
-		return r.updateDisruptionStatusWithPodsAffected(ctx, disruption, 0)
+
+		r.setCondition(
+			disruption,
+			"Progressing",
+			metav1.ConditionTrue,
+			"NoTargetPods",
+			"No running pods found matching selector",
+		)
+
+		r.Recorder.Eventf(
+			disruption,
+			corev1.EventTypeNormal,
+			"NoTargetPods",
+			"No running pods found matching selector",
+		)
+
+		return r.Status().Update(ctx, disruption)
 	}
 
 	// Calculate how many pods we can kill this cycle
 	allowed := r.calculateAllowedKillsPerCycle(safetyConfig, len(pods))
 	if allowed <= 0 {
 		r.Logger.Info("Safety limits reached - no pods will be killed this cycle")
-		// Update status to show no pods affected due to safety limits
-		return r.updateDisruptionStatusWithPodsAffected(ctx, disruption, 0)
+
+		r.setCondition(
+			disruption,
+			"Progressing",
+			metav1.ConditionTrue,
+			"SafetyLimitReached",
+			"Safety limits prevented pod disruption",
+		)
+
+		r.Recorder.Eventf(
+			disruption,
+			corev1.EventTypeNormal,
+			"SafetyLimitReached",
+			"Safety limits prevented pod disruption",
+		)
+
+		return r.Status().Update(ctx, disruption)
 	}
 
-	r.Logger.Info("Target pods", "count", len(pods))
+	// Select which pods to kill (respects KillMode + randomness)
+	targetPods := r.selectPodsToKill(pods, disruption.Spec.PodKill, allowed)
 
-	// TODO: Actually kill pods here
-	// For now, just update status to show how many pods would be affected
-	return r.updateDisruptionStatusWithPodsAffected(ctx, disruption, int32(allowed))
+	// Kill the selected pods
+	actualKilled, err := r.killPods(ctx, targetPods, disruption)
+	if err != nil {
+		return err
+	}
+
+	// Accumulate total affected pods
+	disruption.Status.PodsAffected += int32(actualKilled)
+
+	r.Logger.Info("PodKill cycle completed",
+		"killedThisCycle", actualKilled,
+		"totalAffected", disruption.Status.PodsAffected,
+		"allowed", allowed,
+		"available", len(pods))
+
+	return r.Status().Update(ctx, disruption)
 }
 
 // getTargetPods returns running pods matching the disruption's selector criteria, respecting scope and safety filters.
@@ -610,18 +734,150 @@ func (r *DisruptionReconciler) getTargetPods(ctx context.Context, disruption *ch
 func (r *DisruptionReconciler) calculateAllowedKillsPerCycle(safetyConfig chaosv1.SafetyConfig, available int) int {
 	maxAllowed := available
 
-	// Enforce MaxPodsAffected against the currently available pods
-	if safetyConfig.MaxPodsAffected > 0 && int(safetyConfig.MaxPodsAffected) < maxAllowed {
-		maxAllowed = int(safetyConfig.MaxPodsAffected)
+	// Enforce PodsAffected against the currently available pods
+	if safetyConfig.PodsAffected > 0 && int(safetyConfig.PodsAffected) < maxAllowed {
+		maxAllowed = int(safetyConfig.PodsAffected)
 	}
 
-	// Enforce MaxPercentageAffected against the currently available pods
-	if safetyConfig.MaxPercentageAffected > 0 {
-		maxFromPercent := int(float64(available) * float64(safetyConfig.MaxPercentageAffected) / 100.0)
+	// Enforce PercentageAffected against the currently available pods
+	if safetyConfig.PercentageAffected > 0 {
+		maxFromPercent := int(float64(available) * float64(safetyConfig.PercentageAffected) / 100.0)
 		if maxFromPercent < maxAllowed {
 			maxAllowed = maxFromPercent
 		}
 	}
 
 	return maxAllowed
+}
+
+// selectPodsToKill returns the subset of pods that should be killed this cycle,
+// respecting KillMode and the safety cap (allowed).
+//
+// The controller never gets invalid values because:
+// - Kubernetes API rejects them first
+// - Controller only receives validated objects
+//
+// Arguments:
+// - pods: The pods to select from
+// - spec: The PodKillSpec to apply
+// - allowed: The maximum number of pods to select
+//
+// Returns:
+// - The selected pods
+func (r *DisruptionReconciler) selectPodsToKill(pods []corev1.Pod, spec *chaosv1.PodKillSpec, allowed int) []corev1.Pod {
+	if allowed <= 0 || len(pods) == 0 {
+		return []corev1.Pod{}
+	}
+
+	switch spec.KillMode {
+	case "all":
+		return pods[:min(len(pods), allowed)]
+
+	case "fixed-count":
+		count := min(int(spec.Count), allowed, len(pods))
+		return pods[:count]
+
+	default:
+		return r.getRandomPods(pods, allowed)
+	}
+}
+
+// getRandomPods returns a random subset of pods, respecting the allowed limit
+//
+// Arguments:
+// - pods: The pods to select from
+// - allowed: The maximum number of pods to select (safety limit)
+//
+// Returns:
+// - The selected pods
+func (r *DisruptionReconciler) getRandomPods(pods []corev1.Pod, allowed int) []corev1.Pod {
+	if len(pods) == 0 || allowed <= 0 {
+		return []corev1.Pod{}
+	}
+
+	// Create a copy to avoid modifying the original slice
+	shuffled := make([]corev1.Pod, len(pods))
+	copy(shuffled, pods)
+
+	// Use the global random source (better performance than creating new one each time)
+	globalRandSource.Shuffle(len(shuffled), func(i, j int) {
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	})
+
+	// Return the first 'allowed' pods (respects safety limits)
+	return shuffled[:min(len(shuffled), allowed)]
+}
+
+// killPods deletes the specified pods and updates the disruption status with the number of pods affected
+//
+// Arguments:
+// - ctx: The context for the operation
+// - pods: The pods to delete
+// - disruption: The disruption object to update
+//
+// Returns:
+// - The number of pods killed
+// - An error if the operation fails
+func (r *DisruptionReconciler) killPods(ctx context.Context, pods []corev1.Pod, disruption *chaosv1.Disruption) (int, error) {
+	if len(pods) == 0 {
+		return 0, nil
+	}
+
+	gracePeriodSeconds := disruption.Spec.PodKill.GracePeriodSeconds
+	gracePeriod := int64(0)
+	if gracePeriodSeconds != nil {
+		gracePeriod = *gracePeriodSeconds
+	}
+
+	// Set how gracefully Kubernetes terminates pods during chaos experiments
+	deleteOpts := &client.DeleteOptions{GracePeriodSeconds: &gracePeriod}
+
+	killed := 0
+	for _, pod := range pods {
+		if err := r.Delete(ctx, &pod, deleteOpts); err != nil {
+			if !errors.IsNotFound(err) {
+				r.Logger.Error(err, "Failed to delete pod", "pod", pod.Name, "namespace", pod.Namespace)
+			} else {
+				r.Logger.Info("Pod already deleted", "pod", pod.Name, "namespace", pod.Namespace)
+			}
+			continue
+		}
+		r.Logger.Info("Successfully killed pod", "pod", pod.Name, "namespace", pod.Namespace)
+		r.Recorder.Eventf(
+			disruption,
+			corev1.EventTypeNormal,
+			"PodKilled",
+			"Killed pod %s in namespace %s",
+			pod.Name,
+			pod.Namespace,
+		)
+		killed++
+	}
+
+	return killed, nil
+}
+
+// setCondition sets a condition on the disruption status
+//
+// Arguments:
+// - disruption: The disruption object to update
+// - condType: The type of condition
+// - status: The status of the condition
+// - reason: The reason for the condition
+// - message: The message for the condition
+func (r *DisruptionReconciler) setCondition(
+	disruption *chaosv1.Disruption,
+	condType string,
+	status metav1.ConditionStatus,
+	reason string,
+	message string,
+) {
+	meta.SetStatusCondition(&disruption.Status.Conditions, metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: disruption.Generation,
+		LastTransitionTime: metav1.Now(),
+	})
 }

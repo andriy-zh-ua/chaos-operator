@@ -17,6 +17,8 @@ limitations under the License.
 package v1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -41,9 +43,12 @@ type DisruptionSpec struct {
 
 // SafetyConfig defines safety limits for chaos experiments
 type SafetyConfig struct {
-	MaxDurationSeconds    int32 `json:"maxDurationSeconds,omitempty" yaml:"maxDurationSeconds,omitempty"`       // Maximum time disruption can run
-	MaxPodsAffected       int32 `json:"maxPodsAffected,omitempty" yaml:"maxPodsAffected,omitempty"`             // Maximum number of pods that can be affected
-	MaxPercentageAffected int32 `json:"maxPercentageAffected,omitempty" yaml:"maxPercentageAffected,omitempty"` // Maximum percentage of pods that can be affected (0-100)
+	DurationSeconds             int32         `json:"durationSeconds,omitempty" yaml:"durationSeconds,omitempty"`                         // Default duration for a disruption in seconds
+	PodsAffected                int32         `json:"podsAffected,omitempty" yaml:"podsAffected,omitempty"`                               // Default pods affected per reconciliation cycle (Scope: Per-cycle safety limit)
+	PercentageAffected          int32         `json:"percentageAffected,omitempty" yaml:"percentageAffected,omitempty"`                   // Default percentage of pods affected per reconciliation cycle (Scope: Per-cycle safety limit)
+	CountLimit                  int32         `json:"countLimit,omitempty" yaml:"countLimit,omitempty"`                                   // Absolute default count value a user can specify in their spec.Count (Scope: Global safety limit)
+	GracePeriodSeconds          int64         `json:"gracePeriodSeconds,omitempty" yaml:"gracePeriodSeconds,omitempty"`                   // Default grace period in seconds (equal to default duration)
+	MonitoringReconcileInterval time.Duration `json:"monitoringReconcileInterval,omitempty" yaml:"monitoringReconcileInterval,omitempty"` // Default monitoring reconcile interval (5 seconds)
 }
 
 // DisruptionScope defines the scope of the disruption
@@ -57,6 +62,7 @@ const (
 // PodKillSpec defines the configuration for pod killing disruptions
 type PodKillSpec struct {
 	// Scope defines the scope of the disruption (namespace or cluster)
+	// +kubebuilder:validation:Enum=namespace;cluster
 	// +kubebuilder:default="namespace"
 	Scope DisruptionScope `json:"scope" yaml:"scope"`
 
@@ -84,8 +90,8 @@ type PodKillSpec struct {
 	// +optional
 	Count int32 `json:"count,omitempty" yaml:"count,omitempty"`
 
-	// GracePeriodSeconds specifies the grace period for pod before termination
-	// (OpenAPI validation rule rejects any value less than 0)
+	// GracePeriodSeconds specifies the grace period for pod before termination.
+	// If not specified, the pod's default grace period will be used.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	GracePeriodSeconds *int64 `json:"gracePeriodSeconds,omitempty" yaml:"gracePeriodSeconds,omitempty"`
@@ -113,19 +119,19 @@ type DisruptionStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" yaml:"conditions,omitempty"`
 
-	// Phase represents the current phase of the disruption
+	// phase represents the current phase of the disruption
 	Phase string `json:"phase,omitempty" yaml:"phase,omitempty"` // Pending, Running, Completed, Failed
 
-	// StartTime is when the disruption started execution
+	// startTime represents when the disruption started execution
 	StartTime *metav1.Time `json:"startTime,omitempty" yaml:"startTime,omitempty"`
 
-	// EndTime is when the disruption completed or failed
+	// endTime represents when the disruption completed or failed
 	EndTime *metav1.Time `json:"endTime,omitempty" yaml:"endTime,omitempty"`
 
-	// PodsAffected is the number of pods affected by the disruption
+	// podsAffected represents the number of pods affected by the disruption
 	PodsAffected int32 `json:"podsAffected,omitempty" yaml:"podsAffected,omitempty"`
 
-	// LastExecution is the timestamp of the last execution attempt
+	// lastExecution represents the timestamp of the last execution attempt
 	LastExecution *metav1.Time `json:"lastExecution,omitempty" yaml:"lastExecution,omitempty"`
 }
 
