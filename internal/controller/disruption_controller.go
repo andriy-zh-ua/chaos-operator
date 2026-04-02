@@ -243,7 +243,7 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec, safety
 		// Check against maximum allowed duration from safety config
 		maxDuration := time.Duration(safetyConfig.DurationSeconds) * time.Second
 		if spec.Duration.Duration > maxDuration {
-			return fmt.Errorf("podKill.duration '%v' exceeds maximum allowed limit of %v", spec.Duration.Duration, maxDuration)
+			return fmt.Errorf("podKill.duration %v exceeds maximum allowed limit of %v", spec.Duration.Duration, maxDuration)
 		}
 	}
 
@@ -264,12 +264,12 @@ func (r *DisruptionReconciler) validatePodKill(spec *chaosv1.PodKillSpec, safety
 
 	// Validate count does not exceed safety PodsAffected
 	if spec.KillMode == KillModeFixedCount && safetyConfig.PodsAffected > 0 && spec.Count > safetyConfig.PodsAffected {
-		return fmt.Errorf("podKill.count '%d' exceeds safety PodsAffected limit of %d", spec.Count, safetyConfig.PodsAffected)
+		return fmt.Errorf("podKill.count %d exceeds safety PodsAffected limit of %d", spec.Count, safetyConfig.PodsAffected)
 	}
 
 	// Validate grace period does not exceed maximum limit
 	if spec.GracePeriodSeconds != nil && safetyConfig.GracePeriodSeconds > 0 && *spec.GracePeriodSeconds > safetyConfig.GracePeriodSeconds {
-		return fmt.Errorf("podKill.gracePeriodSeconds '%d' exceeds maximum allowed limit of %d", *spec.GracePeriodSeconds, safetyConfig.GracePeriodSeconds)
+		return fmt.Errorf("podKill.gracePeriodSeconds %d exceeds maximum allowed limit of %d", *spec.GracePeriodSeconds, safetyConfig.GracePeriodSeconds)
 	}
 
 	return nil

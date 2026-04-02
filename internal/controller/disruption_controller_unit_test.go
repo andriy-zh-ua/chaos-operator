@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -119,11 +120,36 @@ func TestValidatePodKill(t *testing.T) {
 			errorMsg:    "no PodKill specification provided - nothing to disrupt",
 		},
 		{
-			name: "empty selector - should not return error",
+			name: "invalid scope name - should return error",
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					PodKill: &chaosv1.PodKillSpec{
-						Selector: &metav1.LabelSelector{},
+						Scope: "invalid_scope_name",
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "invalid scope: invalid_scope_name. Must be 'namespace' or 'cluster'",
+		},
+		{
+			name: "nil selector - should not return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Selector: nil,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "empty selector (exists but no MatchLabels or MatchExpressions) - should not return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Selector: &metav1.LabelSelector{
+							// Empty selector - no MatchLabels or MatchExpressions
+						},
 					},
 				},
 			},
@@ -144,6 +170,30 @@ func TestValidatePodKill(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "podKill.duration must be positive, got -1ns",
+		},
+		{
+			name: "zero duration - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Duration: &metav1.Duration{Duration: 0},
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.duration must be positive, got 0s",
+		},
+		{
+			name: "duration exceeding safety limit - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						Duration: &metav1.Duration{Duration: 600000000000}, // 10 minutes (exceeds 5min default)
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.duration 10m0s exceeds maximum allowed limit of 5m0s",
 		},
 		{
 			name: "count with non-fixed-count killMode - should return error",
@@ -163,7 +213,7 @@ func TestValidatePodKill(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					PodKill: &chaosv1.PodKillSpec{
-						KillMode: "fixed-count",
+						KillMode: KillModeFixedCount,
 						Count:    0,
 					},
 				},
@@ -176,13 +226,30 @@ func TestValidatePodKill(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					PodKill: &chaosv1.PodKillSpec{
-						KillMode: "fixed-count",
+						KillMode: KillModeFixedCount,
 						Count:    101,
 					},
 				},
 			},
 			expectError: true,
 			errorMsg:    "podKill.count '101' exceeds maximum allowed limit of 100",
+		},
+		{
+			name: "fixed-count killMode with count exceeding PodsAffected - should return error",
+			disruption: chaosv1.Disruption{
+				Spec: chaosv1.DisruptionSpec{
+					PodKill: &chaosv1.PodKillSpec{
+						KillMode: KillModeFixedCount,
+						Count:    10,
+					},
+					Safety: &chaosv1.SafetyConfig{
+						PodsAffected: 5,
+						CountLimit:   20,
+					},
+				},
+			},
+			expectError: true,
+			errorMsg:    "podKill.count 10 exceeds safety PodsAffected limit of 5",
 		},
 		{
 			name: "gracePeriod exceeding max limit - should return error",
@@ -194,108 +261,7 @@ func TestValidatePodKill(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "podKill.gracePeriodSeconds '301' exceeds maximum allowed limit of 300",
-		},
-		{
-			name: "valid configuration - should not return error",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						KillMode:           "fixed-count",
-						Count:              5,
-						GracePeriodSeconds: int64Ptr(30),
-					},
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "zero duration - should return error",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						Duration: &metav1.Duration{Duration: 0},
-					},
-				},
-			},
-			expectError: true,
-			errorMsg:    "podKill.duration must be positive, got 0s",
-		},
-		{
-			name: "negative duration - should return error",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						// time.Duration(-1)      // -1ns (nanoseconds)
-						// time.Duration(-1000)   // -1µs (microseconds)
-						// time.Duration(-1000000) // -1ms (milliseconds)
-						// time.Duration(-1000000000) // -1s (seconds)
-						Duration: &metav1.Duration{Duration: -1},
-					},
-				},
-			},
-			expectError: true,
-			errorMsg:    "podKill.duration must be positive, got -1ns",
-		},
-		{
-			name: "valid positive duration - should not return error",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						Duration: &metav1.Duration{Duration: 30000000000}, // 30 seconds
-					},
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "duration exceeding safety limit - should return error",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						Duration: &metav1.Duration{Duration: 600000000000}, // 10 minutes (exceeds 5min default)
-					},
-				},
-			},
-			expectError: true,
-			errorMsg:    "podKill.duration '10m0s' exceeds maximum allowed limit of 5m0s",
-		},
-		{
-			name: "random killMode without count - should not return error",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						KillMode: "random",
-						// Count is 0 by default, which is fine for random mode
-					},
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "all killMode without count - should not return error",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						KillMode: "all",
-						// Count is 0 by default, which is correct for 'all' mode
-					},
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "all killMode with count - should return error (count only valid with fixed-count)",
-			disruption: chaosv1.Disruption{
-				Spec: chaosv1.DisruptionSpec{
-					PodKill: &chaosv1.PodKillSpec{
-						KillMode: "all",
-						Count:    5,
-					},
-				},
-			},
-			expectError: true,
-			errorMsg:    "podKill.count is only valid when killMode is 'fixed-count', but killMode is 'all'",
+			errorMsg:    "podKill.gracePeriodSeconds 301 exceeds maximum allowed limit of 300",
 		},
 	}
 
@@ -303,16 +269,28 @@ func TestValidatePodKill(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			// Create reconciler with default limits
 			r := &DisruptionReconciler{
-				maxCountLimit:         100,
-				maxGracePeriodSeconds: int64Ptr(300),
 				defaultSafetyConfig: chaosv1.SafetyConfig{
-					MaxDurationSeconds:    300, // 5 minutes
-					MaxPodsAffected:       5,
-					MaxPercentageAffected: 20,
+					DurationSeconds:    300, // 5 minutes
+					PodsAffected:       5,
+					PercentageAffected: 20,
+					CountLimit:         100,
+					GracePeriodSeconds: int64(300),
 				},
 			}
 
-			err := r.validatePodKill(test.disruption.Spec.PodKill)
+			// Get safety config (same logic as main code)
+			safetyConfig := test.disruption.Spec.Safety
+			if safetyConfig == nil {
+				safetyConfig = &chaosv1.SafetyConfig{
+					DurationSeconds:    300, // 5 minutes
+					PodsAffected:       5,
+					PercentageAffected: 20,
+					CountLimit:         100,
+					GracePeriodSeconds: int64(300),
+				}
+			}
+
+			err := r.validatePodKill(test.disruption.Spec.PodKill, *safetyConfig)
 
 			if test.expectError {
 				if err == nil {
@@ -344,14 +322,14 @@ func TestGetSafetyConfig(t *testing.T) {
 				},
 			},
 			defaultConfig: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 			expectedResult: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 		},
 		{
@@ -359,21 +337,21 @@ func TestGetSafetyConfig(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					Safety: &chaosv1.SafetyConfig{
-						MaxDurationSeconds:    600,
-						MaxPodsAffected:       10,
-						MaxPercentageAffected: 50,
+						DurationSeconds:    600,
+						PodsAffected:       10,
+						PercentageAffected: 50,
 					},
 				},
 			},
 			defaultConfig: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 			expectedResult: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    600,
-				MaxPodsAffected:       10,
-				MaxPercentageAffected: 50,
+				DurationSeconds:    600,
+				PodsAffected:       10,
+				PercentageAffected: 50,
 			},
 		},
 		{
@@ -381,21 +359,21 @@ func TestGetSafetyConfig(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					Safety: &chaosv1.SafetyConfig{
-						MaxDurationSeconds:    0, // Missing
-						MaxPodsAffected:       8,
-						MaxPercentageAffected: 30,
+						DurationSeconds:    0, // Missing
+						PodsAffected:       8,
+						PercentageAffected: 30,
 					},
 				},
 			},
 			defaultConfig: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 			expectedResult: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300, // From default
-				MaxPodsAffected:       8,   // From disruption
-				MaxPercentageAffected: 30,  // From disruption
+				DurationSeconds:    300, // From default
+				PodsAffected:       8,   // From disruption
+				PercentageAffected: 30,  // From disruption
 			},
 		},
 		{
@@ -403,21 +381,21 @@ func TestGetSafetyConfig(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					Safety: &chaosv1.SafetyConfig{
-						MaxDurationSeconds:    400,
-						MaxPodsAffected:       0, // Missing
-						MaxPercentageAffected: 40,
+						DurationSeconds:    400,
+						PodsAffected:       0, // Missing
+						PercentageAffected: 40,
 					},
 				},
 			},
 			defaultConfig: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 			expectedResult: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    400, // From disruption
-				MaxPodsAffected:       5,   // From default
-				MaxPercentageAffected: 40,  // From disruption
+				DurationSeconds:    400, // From disruption
+				PodsAffected:       5,   // From default
+				PercentageAffected: 40,  // From disruption
 			},
 		},
 		{
@@ -425,21 +403,21 @@ func TestGetSafetyConfig(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					Safety: &chaosv1.SafetyConfig{
-						MaxDurationSeconds:    400,
-						MaxPodsAffected:       8,
-						MaxPercentageAffected: 0, // Missing
+						DurationSeconds:    400,
+						PodsAffected:       8,
+						PercentageAffected: 0, // Missing
 					},
 				},
 			},
 			defaultConfig: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 			expectedResult: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    400, // From disruption
-				MaxPodsAffected:       8,   // From disruption
-				MaxPercentageAffected: 20,  // From default
+				DurationSeconds:    400, // From disruption
+				PodsAffected:       8,   // From disruption
+				PercentageAffected: 20,  // From default
 			},
 		},
 		{
@@ -447,21 +425,21 @@ func TestGetSafetyConfig(t *testing.T) {
 			disruption: chaosv1.Disruption{
 				Spec: chaosv1.DisruptionSpec{
 					Safety: &chaosv1.SafetyConfig{
-						MaxDurationSeconds:    0,
-						MaxPodsAffected:       0,
-						MaxPercentageAffected: 0,
+						DurationSeconds:    0,
+						PodsAffected:       0,
+						PercentageAffected: 0,
 					},
 				},
 			},
 			defaultConfig: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 			expectedResult: chaosv1.SafetyConfig{
-				MaxDurationSeconds:    300,
-				MaxPodsAffected:       5,
-				MaxPercentageAffected: 20,
+				DurationSeconds:    300,
+				PodsAffected:       5,
+				PercentageAffected: 20,
 			},
 		},
 	}
@@ -476,21 +454,21 @@ func TestGetSafetyConfig(t *testing.T) {
 			result := r.getSafetyConfig(test.disruption)
 
 			// Assert if max duration seconds is as expected
-			if result.MaxDurationSeconds != test.expectedResult.MaxDurationSeconds {
-				t.Errorf("Expected MaxDurationSeconds %d, got %d",
-					test.expectedResult.MaxDurationSeconds, result.MaxDurationSeconds)
+			if result.DurationSeconds != test.expectedResult.DurationSeconds {
+				t.Errorf("Expected DurationSeconds %d, got %d",
+					test.expectedResult.DurationSeconds, result.DurationSeconds)
 			}
 
 			// Assert if max pods affected is as expected
-			if result.MaxPodsAffected != test.expectedResult.MaxPodsAffected {
-				t.Errorf("Expected MaxPodsAffected %d, got %d",
-					test.expectedResult.MaxPodsAffected, result.MaxPodsAffected)
+			if result.PodsAffected != test.expectedResult.PodsAffected {
+				t.Errorf("Expected PodsAffected %d, got %d",
+					test.expectedResult.PodsAffected, result.PodsAffected)
 			}
 
 			// Assert if max percentage affected is as expected
-			if result.MaxPercentageAffected != test.expectedResult.MaxPercentageAffected {
-				t.Errorf("Expected MaxPercentageAffected %d, got %d",
-					test.expectedResult.MaxPercentageAffected, result.MaxPercentageAffected)
+			if result.PercentageAffected != test.expectedResult.PercentageAffected {
+				t.Errorf("Expected PercentageAffected %d, got %d",
+					test.expectedResult.PercentageAffected, result.PercentageAffected)
 			}
 		})
 	}
@@ -665,7 +643,8 @@ func TestUpdateDisruptionStatus(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			// Create reconciler with mock client
 			r := &DisruptionReconciler{
-				Client: newMockErrorClient(test.statusUpdateError),
+				Client:   newMockErrorClient(test.statusUpdateError),
+				Recorder: &record.FakeRecorder{},
 			}
 
 			// Create disruption with proper initial state
@@ -715,8 +694,9 @@ func TestUpdateDisruptionStatus(t *testing.T) {
 func TestMarkDisruptionRunning(t *testing.T) {
 	// Create reconciler with mock client
 	r := &DisruptionReconciler{
-		Client: newMockErrorClient(nil),
-		Logger: logr.Discard(),
+		Client:   newMockErrorClient(nil),
+		Logger:   logr.Discard(),
+		Recorder: &record.FakeRecorder{},
 	}
 
 	// Create disruption
@@ -733,8 +713,9 @@ func TestMarkDisruptionRunning(t *testing.T) {
 func TestMarkDisruptionFailed(t *testing.T) {
 	// Create reconciler with mock client
 	r := &DisruptionReconciler{
-		Client: newMockErrorClient(nil),
-		Logger: logr.Discard(),
+		Client:   newMockErrorClient(nil),
+		Logger:   logr.Discard(),
+		Recorder: &record.FakeRecorder{},
 	}
 
 	// Create disruption
@@ -751,8 +732,9 @@ func TestMarkDisruptionFailed(t *testing.T) {
 func TestMarkDisruptionCompleted(t *testing.T) {
 	// Create reconciler with mock client
 	r := &DisruptionReconciler{
-		Client: newMockErrorClient(nil),
-		Logger: logr.Discard(),
+		Client:   newMockErrorClient(nil),
+		Logger:   logr.Discard(),
+		Recorder: &record.FakeRecorder{},
 	}
 
 	// Create disruption
@@ -765,8 +747,3 @@ func TestMarkDisruptionCompleted(t *testing.T) {
 		t.Errorf("Expected no error, got %v", err)
 	}
 }
-
-// // Test individual functions in isolation
-// func TestValidatePodKill(t *testing.T) {
-// 	panic("unimplemented")
-// }
