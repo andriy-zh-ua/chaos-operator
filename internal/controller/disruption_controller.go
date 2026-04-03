@@ -837,9 +837,11 @@ func (r *DisruptionReconciler) killPods(ctx context.Context, pods []corev1.Pod, 
 	deleteOpts := &client.DeleteOptions{GracePeriodSeconds: &gracePeriod}
 
 	killed := 0
+	failed := 0
 	for _, pod := range pods {
 		if err := r.Delete(ctx, &pod, deleteOpts); err != nil {
 			if !errors.IsNotFound(err) {
+				failed++
 				r.Recorder.Eventf(
 					disruption,
 					corev1.EventTypeWarning,
@@ -873,6 +875,11 @@ func (r *DisruptionReconciler) killPods(ctx context.Context, pods []corev1.Pod, 
 			pod.Namespace,
 		)
 		killed++
+	}
+
+	// If ALL pods failed to delete, return an error
+	if failed == len(pods) {
+		return killed, fmt.Errorf("failed to delete all %d pods", failed)
 	}
 
 	return killed, nil
