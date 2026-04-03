@@ -29,7 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -78,7 +78,7 @@ type DisruptionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Logger   logr.Logger
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 
 	defaultSafetyConfig chaosv1.SafetyConfig
 	systemNamespaces    map[string]bool
@@ -91,7 +91,7 @@ func NewDisruptionReconciler(mgr ctrl.Manager) *DisruptionReconciler {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Logger:   ctrl.Log.WithName("controllers").WithName("Disruption"),
-		Recorder: mgr.GetEventRecorderFor("disruption-controller"),
+		Recorder: mgr.GetEventRecorder("disruption-controller"),
 	}
 
 	// Initialize default safety configuration
@@ -474,9 +474,11 @@ func (r *DisruptionReconciler) updateDisruptionStatus(ctx context.Context, disru
 
 		r.Recorder.Eventf(
 			disruption,
+			disruption, // Use disruption as both regarding and related
 			corev1.EventTypeNormal,
 			"DisruptionStarted",
 			"Chaos disruption started",
+			"Chaos disruption %s has started", disruption.Name,
 		)
 	case PhaseCompleted:
 		disruption.Status.EndTime = &now
@@ -491,9 +493,11 @@ func (r *DisruptionReconciler) updateDisruptionStatus(ctx context.Context, disru
 
 		r.Recorder.Eventf(
 			disruption,
+			disruption, // Use disruption as both regarding and related
 			corev1.EventTypeNormal,
 			"DisruptionCompleted",
 			"Chaos disruption completed successfully",
+			"Chaos disruption %s completed successfully", disruption.Name,
 		)
 	case PhaseFailed:
 		disruption.Status.EndTime = &now
@@ -508,9 +512,11 @@ func (r *DisruptionReconciler) updateDisruptionStatus(ctx context.Context, disru
 
 		r.Recorder.Eventf(
 			disruption,
+			disruption, // Use disruption as both regarding and related
 			corev1.EventTypeWarning,
 			"DisruptionFailed",
 			"Chaos disruption failed",
+			"Chaos disruption %s failed", disruption.Name,
 		)
 	}
 
@@ -567,9 +573,11 @@ func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *c
 
 		r.Recorder.Eventf(
 			disruption,
+			disruption, // Use disruption as both regarding and related
 			corev1.EventTypeNormal,
 			"NoTargetPods",
 			"No running pods found matching selector",
+			"No running pods found matching selector for disruption %s", disruption.Name,
 		)
 
 		return r.Status().Update(ctx, disruption)
@@ -590,9 +598,11 @@ func (r *DisruptionReconciler) executePodKill(ctx context.Context, disruption *c
 
 		r.Recorder.Eventf(
 			disruption,
+			disruption, // Use disruption as both regarding and related
 			corev1.EventTypeNormal,
 			"SafetyLimitReached",
 			"Safety limits prevented pod disruption",
+			"Safety limits prevented pod disruption for disruption %s", disruption.Name,
 		)
 
 		return r.Status().Update(ctx, disruption)
@@ -844,22 +854,21 @@ func (r *DisruptionReconciler) killPods(ctx context.Context, pods []corev1.Pod, 
 				failed++
 				r.Recorder.Eventf(
 					disruption,
+					&pod, // Use pod as related object
 					corev1.EventTypeWarning,
 					"PodKillFailed",
-					"Failed to kill pod %s in namespace %s: %v",
-					pod.Name,
-					pod.Namespace,
-					err,
+					"Failed to kill pod",
+					"Failed to kill pod %s in namespace %s: %v", pod.Name, pod.Namespace, err,
 				)
 				r.Logger.Error(err, "Failed to kill pod", "pod", pod.Name, "namespace", pod.Namespace)
 			} else {
 				r.Recorder.Eventf(
 					disruption,
+					&pod, // Use pod as related object
 					corev1.EventTypeNormal,
 					"PodAlreadyKilled",
-					"Pod %s in namespace %s was already killed",
-					pod.Name,
-					pod.Namespace,
+					"Pod already killed",
+					"Pod %s in namespace %s was already killed", pod.Name, pod.Namespace,
 				)
 				r.Logger.Info("Pod already killed", "pod", pod.Name, "namespace", pod.Namespace)
 			}
@@ -868,11 +877,11 @@ func (r *DisruptionReconciler) killPods(ctx context.Context, pods []corev1.Pod, 
 		r.Logger.Info("Successfully killed pod", "pod", pod.Name, "namespace", pod.Namespace)
 		r.Recorder.Eventf(
 			disruption,
+			&pod, // Use pod as related object
 			corev1.EventTypeNormal,
 			"PodKilled",
-			"Killed pod %s in namespace %s",
-			pod.Name,
-			pod.Namespace,
+			"Killed pod",
+			"Killed pod %s in namespace %s", pod.Name, pod.Namespace,
 		)
 		killed++
 	}

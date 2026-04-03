@@ -10,7 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -644,7 +644,7 @@ func TestUpdateDisruptionStatus(t *testing.T) {
 			// Create reconciler with mock client
 			r := &DisruptionReconciler{
 				Client:   newMockErrorClient(test.statusUpdateError),
-				Recorder: &record.FakeRecorder{},
+				Recorder: events.NewFakeRecorder(100),
 			}
 
 			// Create disruption with proper initial state
@@ -696,7 +696,7 @@ func TestMarkDisruptionRunning(t *testing.T) {
 	r := &DisruptionReconciler{
 		Client:   newMockErrorClient(nil),
 		Logger:   logr.Discard(),
-		Recorder: &record.FakeRecorder{},
+		Recorder: events.NewFakeRecorder(100),
 	}
 
 	// Create disruption
@@ -715,7 +715,7 @@ func TestMarkDisruptionFailed(t *testing.T) {
 	r := &DisruptionReconciler{
 		Client:   newMockErrorClient(nil),
 		Logger:   logr.Discard(),
-		Recorder: &record.FakeRecorder{},
+		Recorder: events.NewFakeRecorder(100),
 	}
 
 	// Create disruption
@@ -734,7 +734,7 @@ func TestMarkDisruptionCompleted(t *testing.T) {
 	r := &DisruptionReconciler{
 		Client:   newMockErrorClient(nil),
 		Logger:   logr.Discard(),
-		Recorder: &record.FakeRecorder{},
+		Recorder: events.NewFakeRecorder(100),
 	}
 
 	// Create disruption
