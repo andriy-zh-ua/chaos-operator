@@ -55,8 +55,8 @@ spec:
                     type: string
                   gracePeriodSeconds:
                     description: |-
-                      GracePeriodSeconds specifies the grace period for pod before termination
-                      (OpenAPI validation rule rejects any value less than 0)
+                      GracePeriodSeconds specifies the grace period for pod before termination.
+                      If not specified, the pod's default grace period will be used.
                     format: int64
                     minimum: 0
                     type: integer
@@ -79,6 +79,9 @@ spec:
                     default: namespace
                     description: Scope defines the scope of the disruption (namespace
                       or cluster)
+                    enum:
+                    - namespace
+                    - cluster
                     type: string
                   selector:
                     description: Selector defines the label selector to identify which
@@ -134,13 +137,26 @@ spec:
               safety:
                 description: Safety configuration to prevent excessive disruption
                 properties:
-                  maxDurationSeconds:
+                  countLimit:
                     format: int32
                     type: integer
-                  maxPercentageAffected:
+                  durationSeconds:
                     format: int32
                     type: integer
-                  maxPodsAffected:
+                  gracePeriodSeconds:
+                    format: int64
+                    type: integer
+                  monitoringReconcileInterval:
+                    description: |-
+                      A Duration represents the elapsed time between two instants
+                      as an int64 nanosecond count. The representation limits the
+                      largest representable duration to approximately 290 years.
+                    format: int64
+                    type: integer
+                  percentageAffected:
+                    format: int32
+                    type: integer
+                  podsAffected:
                     format: int32
                     type: integer
                 type: object
@@ -218,23 +234,24 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               endTime:
-                description: EndTime is when the disruption completed or failed
+                description: endTime represents when the disruption completed or failed
                 format: date-time
                 type: string
               lastExecution:
-                description: LastExecution is the timestamp of the last execution
+                description: lastExecution represents the timestamp of the last execution
                   attempt
                 format: date-time
                 type: string
               phase:
-                description: Phase represents the current phase of the disruption
+                description: phase represents the current phase of the disruption
                 type: string
               podsAffected:
-                description: PodsAffected is the number of pods affected by the disruption
+                description: podsAffected represents the number of pods affected by
+                  the disruption
                 format: int32
                 type: integer
               startTime:
-                description: StartTime is when the disruption started execution
+                description: startTime represents when the disruption started execution
                 format: date-time
                 type: string
             type: object
